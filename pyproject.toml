@@ -7,6 +7,8 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.140.0",
     "google-genai>=2.14.0",
+    "notion-client>=3.1.0",
+    "pydantic-settings>=2.14.2",
     "python-dotenv>=1.1.0",
     "python-multipart>=0.0.32",
     "uvicorn[standard]>=0.51.0",
