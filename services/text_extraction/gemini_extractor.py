@@ -1,12 +1,9 @@
 import json
-import os
-from dotenv import load_dotenv
 from google import genai
 from constants.ai_models import GEMINI_MODEL_FOR_OCR
-from services.text_extraction.base import ExtractionService
+from services.text_extraction.abstract_extraction_strategy import ExtractionStrategy
 from schemas.expense import ExpenseData
-
-load_dotenv()
+from core.config import settings
 
 
 PROMPT = """
@@ -19,9 +16,9 @@ Respond with ONLY a JSON object, no markdown fences, no other text:
 {"date": "YYYY-MM-DD", "amount": 0.0, "description": "..."}
 """
 
-class GeminiExtractor(ExtractionService):
+class GeminiExtractor(ExtractionStrategy):
     def __init__(self):
-        self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        self.client = genai.Client(api_key=settings.gemini_api_key)
 
     async def extract(self, image_bytes: bytes, mime_type: str) -> ExpenseData:
         response = self.client.models.generate_content(

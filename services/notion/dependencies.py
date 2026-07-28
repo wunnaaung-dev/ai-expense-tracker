@@ -1,6 +1,6 @@
 from core.config import settings
-from services.notion.storage_strategy import StorageStrategy
-from services.notion.storage_strategy import StorageStrategy
+from services.notion.abstract_storage_strategy import StorageStrategy
+from services.notion.abstract_storage_strategy import StorageStrategy
 from services.notion.notion_storage_service import NotionStorageService
 
 def get_storage_service() -> StorageStrategy:
