@@ -29,7 +29,7 @@ class NotionStorageService(StorageStrategy):
                 )
                 return BatchResult(filename="", status="success", data=item)
             except Exception as e:
-                return BatchResult(filename="", status="failed", error=str(e))
+                return BatchResult(filename="", status="failed", data=item, error=str(e))
 
     async def insert_many(self, items: List[ExpenseData]) -> List[BatchResult]:
         tasks = [self._insert_one(item) for item in items]

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from services.notion.dependencies import get_storage_service
 from services.notion.abstract_storage_strategy import StorageStrategy
+from services.storage.resilient_storage_service import ResilientStorageService
 from services.text_extraction.abstract_extraction_strategy import ExtractionStrategy
 from services.text_extraction.batch_processor import BatchExtractionProcessor
 from services.text_extraction.dependencies import get_extraction_service
@@ -56,3 +57,14 @@ async def save_expenses(
         return batch_results
 
     return await storage.insert_many(valid_items)
+
+@router.post("/expenses/sync-backup")
+async def sync_backup(
+    storage: ResilientStorageService = Depends(get_storage_service)
+):
+    results = await storage.sync_backup()
+    return {
+        "synced_count": len([r for r in results if r.status == "success"]),
+        "failed_count": len([r for r in results if r.status == "failed"]),
+        "results": results
+    }
