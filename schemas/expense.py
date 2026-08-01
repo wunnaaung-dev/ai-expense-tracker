@@ -7,6 +7,7 @@ class ExpenseData(BaseModel):
     date: date
     amount: float
     description: str
+    category: str = "General"
 
 class BatchResult(BaseModel):
     filename: str

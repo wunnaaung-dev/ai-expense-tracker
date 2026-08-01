@@ -5,6 +5,7 @@ EXPENSE_PROPERTY_MAP: Dict[str, Callable[[ExpenseData], Any]] = {
     "Name": lambda item: {"title": [{"text": {"content": item.description}}]},
     "Amount": lambda item: {"number": item.amount},
     "Date": lambda item: {"date": {"start": item.date.isoformat()}},
+    "Category": lambda item: {"select": {"name": item.category}}
 }
 
 def build_properties(item: ExpenseData) -> Dict[str, Any]:
