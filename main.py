@@ -1,9 +1,16 @@
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
 from fastapi.openapi.utils import get_openapi
 
+from core.db import init_db
 from routers import expense
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 app.include_router(expense.router)
 
