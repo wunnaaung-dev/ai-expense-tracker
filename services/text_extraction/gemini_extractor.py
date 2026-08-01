@@ -1,4 +1,6 @@
+from datetime import date
 import json
+from typing import List
 from google import genai
 from constants.ai_models import GEMINI_MODEL_FOR_OCR
 from constants.categories import VALID_CATEGORIES
@@ -28,6 +30,25 @@ Respond with ONLY a JSON object, no markdown fences, no other text:
 {{"is_valid_receipt": true, "date": "YYYY-MM-DD", "amount": 0.0, "description": "...", "category": "..."}}
 """
 
+TEXT_EXTRACTION_PROMPT = """
+You are an expense-logging assistant. The user will describe expenses in free text
+(possibly in Burmese or English, possibly multiple expenses in one message).
+
+Extract EVERY distinct expense mentioned. For each one, extract:
+- date (YYYY-MM-DD; if "today"/"ဒီနေ့" is mentioned or no date given, use today's date: __TODAY__)
+- amount (number only)
+- description (short description of what it was for)
+- category (choose EXACTLY one from this list: {categories}.
+  If nothing matches clearly, respond with "General")
+
+Respond with ONLY a JSON array, no markdown fences, no other text:
+[
+  {{"date": "YYYY-MM-DD", "amount": 0.0, "description": "...", "category": "..."}}
+]
+
+If no valid expense is found in the text, respond with an empty array: []
+""".replace("{categories}", ", ".join(VALID_CATEGORIES))
+
 class GeminiExtractor(ExtractionStrategy):
     def __init__(self):
         self.client = genai.Client(api_key=settings.gemini_api_key)
@@ -47,3 +68,35 @@ class GeminiExtractor(ExtractionStrategy):
         text = response.text.strip().removeprefix("```json").removesuffix("```").strip()
         data = json.loads(text)
         return ExpenseData(**data)
+    
+    async def extract_from_text(self, text: str) -> List[ExpenseData]:
+        prompt = TEXT_EXTRACTION_PROMPT.replace("__TODAY__", date.today().isoformat())
+
+        response = self.client.models.generate_content(
+            model=GEMINI_MODEL_FOR_OCR,
+            contents=[text, prompt]
+        )
+
+        if response.text is None:
+            raise ValueError(
+                f"Gemini blocked the request: {response.prompt_feedback}"
+            )
+
+        text = response.text.strip().removeprefix("```json").removesuffix("```").strip()
+        raw_list = json.loads(text)
+        
+        items = []
+
+        for raw in raw_list:
+            if raw.get("amount", 0) <= 0:
+                continue
+            items.append(
+                ExpenseData(
+                    date=raw.get("date", date.today().isoformat()),
+                    amount=raw["amount"],
+                    description=raw.get("description", ""),
+                    category=raw.get("category", "General"),
+                )
+            )
+        
+        return items

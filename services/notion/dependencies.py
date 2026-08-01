@@ -16,3 +16,4 @@ def get_storage_service() -> StorageStrategy:
 
 def get_duplicate_checker() -> DuplicateChecker:
     return DuplicateChecker()
+

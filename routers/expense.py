@@ -8,7 +8,7 @@ from services.text_extraction.abstract_extraction_strategy import ExtractionStra
 from services.text_extraction.batch_processor import BatchExtractionProcessor
 from services.text_extraction.dependencies import get_extraction_service
 from services.text_extraction.gemini_extractor import GeminiExtractor
-from schemas.expense import BatchResult, ExpenseData
+from schemas.expense import BatchResult, ExpenseData, TextExpenseRequest
 
 from typing import List
 
@@ -98,3 +98,20 @@ async def sync_backup(
         "failed_count": len([r for r in results if r.status == "failed"]),
         "results": results
     }
+    
+@router.post("/expense/text", response_model=List[BatchResult])
+async def log_expense_from_text(
+    request: TextExpenseRequest,
+    text_service: ExtractionStrategy = Depends(get_extraction_service),
+    storage: StorageStrategy = Depends(get_storage_service),
+):
+    items = await text_service.extract_from_text(request.text)
+
+    if not items:
+        return [BatchResult(
+            filename="text-input",
+            status="failed",
+            error="No valid expense found in the text",
+        )]
+
+    return await storage.insert_many(items)

@@ -9,8 +9,12 @@ class ExpenseData(BaseModel):
     description: str
     category: str = "General"
 
+class TextExpenseRequest(BaseModel):
+    text: str
+
 class BatchResult(BaseModel):
     filename: str
     status: Literal["success", "failed"]
     data: ExpenseData | None = None
     error: str | None = None
+
