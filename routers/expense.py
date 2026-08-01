@@ -18,7 +18,7 @@ MAX_FILES = 10
 
 @router.post("/expense/upload", response_model=list[BatchResult])
 async def upload_expense_slips(
-    files: list[UploadFile] = File(...),
+    files: list[UploadFile] = File(..., media_type="image/*"),
     service: ExtractionStrategy = Depends(get_extraction_service),
     storage: StorageStrategy = Depends(get_storage_service),
     dedup: DuplicateChecker = Depends(get_duplicate_checker)
@@ -54,7 +54,7 @@ async def upload_expense_slips(
         file_hashes[file.filename or "unknown"] = file_hash
     
     processor = BatchExtractionProcessor(service)
-    results = await processor.process_batch(files)  
+    results = await processor.process_batch(files_to_process)  
 
     valid_items = [
         r.data for r in results
