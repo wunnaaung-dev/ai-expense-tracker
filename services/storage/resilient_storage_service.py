@@ -1,10 +1,8 @@
-
 from typing import List
 
 from schemas.expense import BatchResult, ExpenseData
-from services.notion.abstract_storage_strategy import StorageStrategy
+from services.storage.abstract_storage_strategy import StorageStrategy
 from services.storage.backup_storage import BackupStorage
-
 
 class ResilientStorageService(StorageStrategy):
     def __init__(self, primary: StorageStrategy, backup: BackupStorage):

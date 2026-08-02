@@ -1,13 +1,13 @@
 import asyncio
 from fastapi import UploadFile
 
-from services.text_extraction.abstract_extraction_strategy import ExtractionStrategy
 from schemas.expense import BatchResult
+from services.extraction.abstract_image_extraction_strategy import ImageExtractionStrategy
 
 MAX_CONCURRENT_REQUESTS = 3
 
 class BatchExtractionProcessor:
-    def __init__(self, strategy: ExtractionStrategy, max_concurrent: int = MAX_CONCURRENT_REQUESTS):
+    def __init__(self, strategy: ImageExtractionStrategy, max_concurrent: int = MAX_CONCURRENT_REQUESTS):
         self._strategy = strategy
         self._limiter = asyncio.Semaphore(max_concurrent)
 

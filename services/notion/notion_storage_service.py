@@ -3,7 +3,7 @@ import asyncio
 from notion_client import AsyncClient
 from typing import List, Callable, Dict, Any
 
-from services.notion.abstract_storage_strategy import StorageStrategy
+from services.storage.abstract_storage_strategy import StorageStrategy
 from schemas.expense import BatchResult, ExpenseData
 from services.notion.property_config import build_properties
 

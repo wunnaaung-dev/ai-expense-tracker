@@ -4,12 +4,13 @@ from typing import List
 from google import genai
 from constants.ai_models import GEMINI_MODEL_FOR_OCR
 from constants.categories import VALID_CATEGORIES
-from services.text_extraction.abstract_extraction_strategy import ExtractionStrategy
+
 from schemas.expense import ExpenseData
 from core.config import settings
+from services.extraction.abstract_image_extraction_strategy import ImageExtractionStrategy
+from services.extraction.abstract_text_extraction_strategy import TextExtractionStrategy
 
-
-PROMPT = f"""
+IMAGE_EXTRACTION_PROMPT = f"""
 You are a receipt/slip extraction assistant.
 
 First, determine if this image contains an actual receipt, invoice, payment slip,
@@ -49,7 +50,7 @@ Respond with ONLY a JSON array, no markdown fences, no other text:
 If no valid expense is found in the text, respond with an empty array: []
 """.replace("{categories}", ", ".join(VALID_CATEGORIES))
 
-class GeminiExtractor(ExtractionStrategy):
+class GeminiExtractor(ImageExtractionStrategy, TextExtractionStrategy):
     def __init__(self):
         self.client = genai.Client(api_key=settings.gemini_api_key)
 
@@ -58,7 +59,7 @@ class GeminiExtractor(ExtractionStrategy):
             model=GEMINI_MODEL_FOR_OCR,
             contents=[
                 {"inline_data": {"mime_type": mime_type, "data": image_bytes}},
-                PROMPT,
+                IMAGE_EXTRACTION_PROMPT,
             ]
         )
         if response.text is None:
