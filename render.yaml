@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: ai-expense-tracker
+    runtime: python
+    buildCommand: uv sync --frozen && uv cache prune --ci
+    startCommand: uv run uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: NOTION_TOKEN
+        sync: false
+      - key: NOTION_DATABASE_ID
+        sync: false
