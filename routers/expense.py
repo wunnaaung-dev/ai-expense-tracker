@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
-from core.dependencies import get_expense_upload_orchestrator, get_storage_service, get_text_expense_orchestrator
+from core.dependencies import get_expense_upload_orchestrator, get_storage_service, get_text_expense_orchestrator, get_voice_expense_orchestrator
 
 from services.storage.resilient_storage_service import ResilientStorageService
 from schemas.expense import BatchResult, TextExpenseRequest
@@ -9,10 +9,13 @@ from typing import List
 
 from services.upload.expense_upload_orchestrator import ExpenseUploadOrchestrator
 from services.upload.text_expense_orchestrator import TextExpenseOrchestrator
+from services.upload.voice_expense_orchestrator import VoiceExpenseOrchestrator
 
 router = APIRouter()
 
 MAX_FILES = 10
+
+ALLOWED_AUDIO_TYPES = {"audio/webm", "audio/ogg", "audio/wav", "audio/mp4", "audio/mpeg", "audio/x-m4a"}
 
 @router.post("/expense/upload", response_model=list[BatchResult])
 async def upload_expense_slips(
@@ -46,3 +49,17 @@ async def sync_backup(
         "results": results
     }
     
+
+@router.post("/expense/voice", response_model=list[BatchResult])
+async def log_expense_from_voice(
+    file: UploadFile = File(...),
+    orchestrator: VoiceExpenseOrchestrator = Depends(get_voice_expense_orchestrator),
+):
+    if file.content_type not in ALLOWED_AUDIO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported audio type: {file.content_type}",
+        )
+
+    audio_bytes = await file.read()
+    return await orchestrator.process(audio_bytes, file.content_type)

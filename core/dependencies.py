@@ -2,6 +2,7 @@ from fastapi import Depends
 
 from core.config import settings
 from services.dedup.hash_checker import DuplicateChecker
+from services.extraction.abstract_audio_extraction_strategy import AudioExtractionStrategy
 from services.extraction.abstract_image_extraction_strategy import ImageExtractionStrategy
 from services.extraction.abstract_text_extraction_strategy import TextExtractionStrategy
 from services.storage.abstract_storage_strategy import StorageStrategy
@@ -11,6 +12,7 @@ from services.storage.resilient_storage_service import ResilientStorageService
 from services.extraction.gemini_extractor import GeminiExtractor
 from services.upload.expense_upload_orchestrator import ExpenseUploadOrchestrator
 from services.upload.text_expense_orchestrator import TextExpenseOrchestrator
+from services.upload.voice_expense_orchestrator import VoiceExpenseOrchestrator
 
 def get_storage_service() -> StorageStrategy:
     notion_service = NotionStorageService(
@@ -29,6 +31,9 @@ def get_image_extraction_service() -> ImageExtractionStrategy:
 def get_text_extraction_service() -> TextExtractionStrategy:
     return GeminiExtractor()
 
+def get_audio_extraction_service() -> AudioExtractionStrategy:
+    return GeminiExtractor()
+
 def get_expense_upload_orchestrator(
     image_extraction: ImageExtractionStrategy = Depends(get_image_extraction_service),
     storage: StorageStrategy = Depends(get_storage_service),
@@ -41,3 +46,9 @@ def get_text_expense_orchestrator(
     storage: StorageStrategy = Depends(get_storage_service),
 ) -> TextExpenseOrchestrator:
     return TextExpenseOrchestrator(extraction=text_extraction, storage=storage)
+
+def get_voice_expense_orchestrator(
+    extraction: AudioExtractionStrategy = Depends(get_audio_extraction_service),
+    storage: StorageStrategy = Depends(get_storage_service),
+) -> VoiceExpenseOrchestrator:
+    return VoiceExpenseOrchestrator(extraction=extraction, storage=storage)

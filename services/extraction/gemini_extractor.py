@@ -7,6 +7,7 @@ from constants.categories import VALID_CATEGORIES
 
 from schemas.expense import ExpenseData
 from core.config import settings
+from services.extraction.abstract_audio_extraction_strategy import AudioExtractionStrategy
 from services.extraction.abstract_image_extraction_strategy import ImageExtractionStrategy
 from services.extraction.abstract_text_extraction_strategy import TextExtractionStrategy
 
@@ -50,7 +51,38 @@ Respond with ONLY a JSON array, no markdown fences, no other text:
 If no valid expense is found in the text, respond with an empty array: []
 """.replace("{categories}", ", ".join(VALID_CATEGORIES))
 
-class GeminiExtractor(ImageExtractionStrategy, TextExtractionStrategy):
+AUDIO_EXTRACTION_PROMPT = f"""
+You are an expense-logging assistant. Listen to this audio carefully.
+The speaker may be speaking in Burmese (Myanmar language), English, Thai,
+or a mix of languages — transcribe accurately regardless of language,
+paying close attention to Burmese numerals and currency terms
+(ဘတ်, ကျပ်, ဒေါ်လာ) if spoken.
+
+First, determine if the audio contains a real expense description
+(the speaker mentioning something they spent money on).
+
+If the audio is NOT a valid expense description (silence, noise,
+unrelated speech, unclear audio), respond with:
+{{"is_valid": false}}
+
+If it IS a valid expense description, extract EVERY distinct expense
+mentioned. For each one:
+- date (YYYY-MM-DD; if "today"/"ဒီနေ့" or no date mentioned, use today: {{today}})
+- amount (number only)
+- description (short description of what it was for)
+- category (choose EXACTLY one from this list: {", ".join(VALID_CATEGORIES)}.
+  If nothing matches clearly, respond with "General")
+
+Respond with ONLY a JSON object, no markdown fences, no other text:
+{{
+  "is_valid": true,
+  "expenses": [
+    {{"date": "YYYY-MM-DD", "amount": 0.0, "description": "...", "category": "..."}}
+  ]
+}}
+"""
+
+class GeminiExtractor(ImageExtractionStrategy, TextExtractionStrategy, AudioExtractionStrategy):
     def __init__(self):
         self.client = genai.Client(api_key=settings.gemini_api_key)
 
@@ -100,4 +132,31 @@ class GeminiExtractor(ImageExtractionStrategy, TextExtractionStrategy):
                 )
             )
         
+        return items
+    
+    async def extract_from_audio(self, audio_bytes: bytes, mime_type: str) -> list[ExpenseData]:
+        prompt = AUDIO_EXTRACTION_PROMPT.replace("{today}", date.today().isoformat())
+
+        response = self.client.models.generate_content( 
+            model=GEMINI_MODEL_FOR_OCR,
+            contents=[prompt, {"inline_data": {"mime_type": mime_type, "data": audio_bytes}}]
+        )
+
+        raw = json.loads(response.text or '{"is_valid": false}')
+
+        if not raw.get("is_valid", False):
+            return []
+
+        items = []
+        for expense in raw.get("expenses", []):
+            if expense.get("amount", 0) <= 0:
+                continue
+            items.append(
+                ExpenseData(
+                    date=expense["date"],
+                    amount=expense["amount"],
+                    description=expense["description"],
+                    category=expense.get("category", "General"),
+                )
+            )
         return items
