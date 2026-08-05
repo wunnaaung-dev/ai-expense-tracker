@@ -18,7 +18,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "https://ai-expense-tracker-xbae.onrender.com",
-        "https://ai-expense-tracker-frontend-8ptxvxpby-wunnas-projects.vercel.app/"
+        "https://ai-expense-tracker-frontend-8ptxvxpby-wunnas-projects.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
