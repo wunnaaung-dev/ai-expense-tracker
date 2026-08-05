@@ -16,7 +16,7 @@ router = APIRouter()
 
 MAX_FILES = 10
 
-@router.get("/expense", response_model=ExpenseListResponse)
+@router.get("/api/v1/expense", response_model=ExpenseListResponse)
 async def get_all_expenses(
     page_size: int = Query(default=10, ge=1, le=100),
     start_cursor: Optional[str] = Query(default=None),
@@ -27,7 +27,7 @@ async def get_all_expenses(
 
 ALLOWED_AUDIO_TYPES = {"audio/webm", "audio/ogg", "audio/wav", "audio/mp4", "audio/mpeg", "audio/x-m4a"}
 
-@router.post("/expense/upload", response_model=list[BatchResult])
+@router.post("/api/v1/expense/upload", response_model=list[BatchResult])
 async def upload_expense_slips(
     files: list[UploadFile] = File(..., media_type="image/*"),
     orchestrator: ExpenseUploadOrchestrator = Depends(get_expense_upload_orchestrator)
@@ -40,7 +40,7 @@ async def upload_expense_slips(
 
     return await orchestrator.process(files)
     
-@router.post("/expense/text", response_model=List[BatchResult])
+@router.post("/api/v1/expense/text", response_model=List[BatchResult])
 async def log_expense_from_text(
     request: TextExpenseRequest,
     orchestrator: TextExpenseOrchestrator = Depends(get_text_expense_orchestrator),
@@ -48,7 +48,7 @@ async def log_expense_from_text(
     return await orchestrator.process(request.text)
 
 
-@router.post("/expenses/sync-backup")
+@router.post("/api/v1/expense/sync-backup")
 async def sync_backup(
     storage: ResilientStorageService = Depends(get_storage_service)
 ):
@@ -60,7 +60,7 @@ async def sync_backup(
     }
     
 
-@router.post("/expense/voice", response_model=list[BatchResult])
+@router.post("/api/v1/expense/voice", response_model=list[BatchResult])
 async def log_expense_from_voice(
     file: UploadFile = File(...),
     orchestrator: VoiceExpenseOrchestrator = Depends(get_voice_expense_orchestrator),
