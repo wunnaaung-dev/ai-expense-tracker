@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Optional, List
 
 from pydantic import BaseModel
 from datetime import date
@@ -17,4 +17,8 @@ class BatchResult(BaseModel):
     status: Literal["success", "failed"]
     data: ExpenseData | None = None
     error: str | None = None
+
+class ExpenseListResponse(BaseModel):
+    expenses: List[ExpenseData]
+    next_cursor: Optional[str] = None
 

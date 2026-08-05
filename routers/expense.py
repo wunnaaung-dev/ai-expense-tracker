@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from core.dependencies import get_expense_upload_orchestrator, get_storage_service, get_text_expense_orchestrator, get_voice_expense_orchestrator
 
+from services.notion.notion_storage_service import NotionStorageService
 from services.storage.resilient_storage_service import ResilientStorageService
-from schemas.expense import BatchResult, TextExpenseRequest
+from schemas.expense import BatchResult, ExpenseListResponse, TextExpenseRequest
 
-from typing import List
+from typing import List, Optional
 
 from services.upload.expense_upload_orchestrator import ExpenseUploadOrchestrator
 from services.upload.text_expense_orchestrator import TextExpenseOrchestrator
@@ -14,6 +15,15 @@ from services.upload.voice_expense_orchestrator import VoiceExpenseOrchestrator
 router = APIRouter()
 
 MAX_FILES = 10
+
+@router.get("/expense", response_model=ExpenseListResponse)
+async def get_all_expenses(
+    page_size: int = Query(default=10, ge=1, le=100),
+    start_cursor: Optional[str] = Query(default=None),
+    notion_service: ResilientStorageService = Depends(get_storage_service)
+):
+    expenses, next_cursor = await notion_service.get_all(page_size, start_cursor)
+    return ExpenseListResponse(expenses=expenses, next_cursor=next_cursor)
 
 ALLOWED_AUDIO_TYPES = {"audio/webm", "audio/ogg", "audio/wav", "audio/mp4", "audio/mpeg", "audio/x-m4a"}
 

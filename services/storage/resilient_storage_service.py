@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Tuple, Optional
 
 from schemas.expense import BatchResult, ExpenseData
 from services.storage.abstract_storage_strategy import StorageStrategy
@@ -40,3 +40,6 @@ class ResilientStorageService(StorageStrategy):
         for item in failed_items:
             await self.backup.save(item)  # Save failed items back to backup
         return results
+
+    async def get_all(self, page_size: int, start_cursor: Optional[str] = None) -> Tuple[List[ExpenseData], Optional[str]]:
+        return await self.primary.get_all(page_size, start_cursor)

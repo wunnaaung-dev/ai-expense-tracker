@@ -14,12 +14,14 @@ from services.upload.expense_upload_orchestrator import ExpenseUploadOrchestrato
 from services.upload.text_expense_orchestrator import TextExpenseOrchestrator
 from services.upload.voice_expense_orchestrator import VoiceExpenseOrchestrator
 
+
 def get_storage_service() -> StorageStrategy:
     notion_service = NotionStorageService(
         token=settings.notion_token,
         database_id=settings.notion_database_id,
     )
     backup = BackupStorage()
+    print(f"Setting up storage service with Notion token: {settings.notion_token}")
     return ResilientStorageService(primary=notion_service, backup=backup)
 
 def get_duplicate_checker() -> DuplicateChecker:
