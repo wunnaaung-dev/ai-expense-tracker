@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
 from core.db import init_db
-from routers import expense
+from routers import expense, health
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,12 +25,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(health.router)
 app.include_router(expense.router)
-
-
-@app.get("/")
-def hello_world():
-    return {"message": "Hello World"}
 
 
 def custom_openapi():
