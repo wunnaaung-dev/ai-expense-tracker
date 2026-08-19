@@ -1,10 +1,11 @@
+import os
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-
+from starlette.middleware.sessions import SessionMiddleware
 from core.db import init_db
-from routers import expense, health
+from routers import expense, health, auth
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -26,8 +27,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("JWT_SECRET"))
+
 app.include_router(health.router)
 app.include_router(expense.router)
+app.include_router(auth.router)
+
+
+@app.get("/")
+async def root():
+    return {"status": "ok"}
 
 
 def custom_openapi():

@@ -4,7 +4,9 @@ class Settings(BaseSettings):
     notion_token: str = ""
     notion_database_id: str = ""
     gemini_api_key: str = ""
-
+    redirect_uri: str = ""
+    database_url: str = ""
+    jwt_secret: str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()

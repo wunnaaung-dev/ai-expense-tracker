@@ -12,7 +12,7 @@ from services.upload.expense_upload_orchestrator import ExpenseUploadOrchestrato
 from services.upload.text_expense_orchestrator import TextExpenseOrchestrator
 from services.upload.voice_expense_orchestrator import VoiceExpenseOrchestrator
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(prefix="/api/v1", tags=["expense"])
 
 MAX_FILES = 10
 

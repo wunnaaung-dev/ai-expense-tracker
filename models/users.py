@@ -8,4 +8,8 @@ class User(Base):
     google_sub = Column(String, unique=True, nullable=False)
     email = Column(String, nullable=False)
     name = Column(String)
-    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
