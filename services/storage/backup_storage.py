@@ -4,8 +4,8 @@ from typing import List
 from schemas.expense import ExpenseData
 
 class BackupStorage:
-    def __init__(self, backup_file: str = "data/notion_backup.jsonl"):
-        self.backup_file = Path(backup_file)
+    def __init__(self, user_id: int):
+        self.backup_file = Path(f"data/backup/{user_id}.jsonl")
         self.backup_file.parent.mkdir(parents=True, exist_ok=True)
         
     async def save(self, item: ExpenseData) -> None:

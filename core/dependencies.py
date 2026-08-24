@@ -1,6 +1,10 @@
-from fastapi import Depends
+from fastapi import Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.config import settings
+from core.crypto import decrypt_secret
+from core.db import get_db
+from core.security import get_current_user
+from models.users import User
 from services.dedup.hash_checker import DuplicateChecker
 from services.extraction.abstract_audio_extraction_strategy import AudioExtractionStrategy
 from services.extraction.abstract_image_extraction_strategy import ImageExtractionStrategy
@@ -9,23 +13,37 @@ from services.storage.abstract_storage_strategy import StorageStrategy
 from services.notion.notion_storage_service import NotionStorageService
 from services.storage.backup_storage import BackupStorage
 from services.storage.resilient_storage_service import ResilientStorageService
+from services.storage.user_storage import get_notion_config
 from services.extraction.gemini_extractor import GeminiExtractor
 from services.upload.expense_upload_orchestrator import ExpenseUploadOrchestrator
 from services.upload.text_expense_orchestrator import TextExpenseOrchestrator
 from services.upload.voice_expense_orchestrator import VoiceExpenseOrchestrator
 
 
-def get_storage_service() -> StorageStrategy:
+async def get_storage_service(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ResilientStorageService:
+    config = await get_notion_config(db, current_user.id)
+    if not config or not config.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Notion is not connected",
+        )
+
+    token = decrypt_secret(config.encrypted_credentials)
     notion_service = NotionStorageService(
-        token=settings.notion_token,
-        database_id=settings.notion_database_id,
+        token=token,
+        database_id=config.target_id,
     )
-    backup = BackupStorage()
-    print(f"Setting up storage service with Notion token: {settings.notion_token}")
+    backup = BackupStorage(user_id=current_user.id)
     return ResilientStorageService(primary=notion_service, backup=backup)
 
-def get_duplicate_checker() -> DuplicateChecker:
-    return DuplicateChecker()
+def get_duplicate_checker(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DuplicateChecker:
+    return DuplicateChecker(db, current_user.id)
 
 def get_image_extraction_service() -> ImageExtractionStrategy:
     return GeminiExtractor()

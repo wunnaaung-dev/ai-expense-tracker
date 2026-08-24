@@ -1,36 +1,26 @@
-import os
 from fastapi import FastAPI
-from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from starlette.middleware.sessions import SessionMiddleware
-from core.db import init_db
-from routers import expense, health, auth
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await init_db()
-    yield
+from core.config import settings
+from routers import auth, expense, health, storage
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "https://ai-expense-tracker-xbae.onrender.com",
-        "https://ai-expense-tracker-frontend-8ptxvxpby-wunnas-projects.vercel.app",
-        "https://ai-expense-tracker-frontend-bice.vercel.app"
-    ],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.add_middleware(SessionMiddleware, secret_key=os.getenv("JWT_SECRET"))
+app.add_middleware(SessionMiddleware, secret_key=settings.jwt_secret)
 
 app.include_router(health.router)
 app.include_router(expense.router)
+app.include_router(storage.router)
 app.include_router(auth.router)
 
 

@@ -78,5 +78,5 @@ class ExpenseUploadOrchestrator:
             else:
                 file_hash = file_hashes.get(r.filename or "unknown")
                 if file_hash:
-                    await self.dedup.mark_processed(file_hash, r.filename)
+                    await self.dedup.mark_processed(file_hash)
         

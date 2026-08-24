@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from core.dependencies import get_expense_upload_orchestrator, get_storage_service, get_text_expense_orchestrator, get_voice_expense_orchestrator
 
+from core.security import get_current_user
 from services.notion.notion_storage_service import NotionStorageService
 from services.storage.resilient_storage_service import ResilientStorageService
 from schemas.expense import BatchResult, ExpenseListResponse, TextExpenseRequest
@@ -12,7 +13,7 @@ from services.upload.expense_upload_orchestrator import ExpenseUploadOrchestrato
 from services.upload.text_expense_orchestrator import TextExpenseOrchestrator
 from services.upload.voice_expense_orchestrator import VoiceExpenseOrchestrator
 
-router = APIRouter(prefix="/api/v1", tags=["expense"])
+router = APIRouter(prefix="/api/v1", tags=["expense"], dependencies=[Depends(get_current_user)])
 
 MAX_FILES = 10
 

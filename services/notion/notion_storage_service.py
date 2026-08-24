@@ -41,6 +41,9 @@ class NotionStorageService(StorageStrategy):
             self._data_source_id = str(data_sources[0]["id"])
         return self._data_source_id
 
+    async def verify_access(self) -> None:
+        await self._ensure_data_source_id()
+
     async def _insert_one(self, item: ExpenseData) -> BatchResult:
         async with self.semaphore:
             try:
