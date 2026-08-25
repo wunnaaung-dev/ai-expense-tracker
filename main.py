@@ -16,13 +16,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.add_middleware(SessionMiddleware, secret_key=settings.jwt_secret)
+app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
 
 app.include_router(health.router)
 app.include_router(expense.router)
 app.include_router(storage.router)
 app.include_router(auth.router)
-
 
 @app.get("/")
 async def root():

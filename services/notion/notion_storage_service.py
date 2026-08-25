@@ -5,7 +5,15 @@ from typing import List, Callable, Dict, Any, Optional, Tuple
 
 from services.storage.abstract_storage_strategy import StorageStrategy
 from schemas.expense import BatchResult, ExpenseData
-from services.notion.property_config import build_properties, parse_notion_page
+from services.notion.property_config import (
+    EXPENSE_DB_SCHEMA,
+    build_properties,
+    parse_notion_page,
+)
+
+
+class NoSharedNotionPageError(Exception):
+    """Raised when the integration has no shared parent page to create a database under."""
 
 
 def _format_database_id(database_id: str) -> str:
@@ -13,6 +21,28 @@ def _format_database_id(database_id: str) -> str:
     if len(raw) != 32:
         return database_id
     return f"{raw[:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:]}"
+
+
+async def find_parent_page_id(client: AsyncClient) -> str:
+    response = await client.search(
+        filter={"property": "object", "value": "page"},
+        page_size=1,
+    )
+    results = response.get("results", [])
+    if not results:
+        raise NoSharedNotionPageError(
+            "No shared Notion page found. Share a page with the integration."
+        )
+    return str(results[0]["id"])
+
+
+async def create_expense_database(client: AsyncClient, parent_page_id: str) -> str:
+    db = await client.databases.create(
+        parent={"type": "page_id", "page_id": parent_page_id},
+        title=[{"type": "text", "text": {"content": "Expenses"}}],
+        initial_data_source={"properties": EXPENSE_DB_SCHEMA},
+    )
+    return str(db["id"])
 
 
 class NotionStorageService(StorageStrategy):

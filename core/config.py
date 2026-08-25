@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     redirect_uri: str = ""
     database_url: str = ""
     jwt_secret: str = ""
+    session_secret: str = ""
     credentials_encryption_key: str = ""
     cookie_secure: bool = False
     allowed_origins: str = _DEFAULT_ALLOWED_ORIGINS

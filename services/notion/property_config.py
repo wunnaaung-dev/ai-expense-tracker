@@ -2,6 +2,13 @@ from typing import Any, Callable, Dict
 from datetime import date
 from schemas.expense import ExpenseData
 
+EXPENSE_DB_SCHEMA: Dict[str, Dict[str, Any]] = {
+    "Name": {"title": {}},
+    "Amount": {"number": {}},
+    "Date": {"date": {}},
+    "Category": {"select": {}},
+}
+
 EXPENSE_PROPERTY_MAP: Dict[str, Callable[[ExpenseData], Any]] = {
     "Name": lambda item: {"title": [{"text": {"content": item.description}}]},
     "Amount": lambda item: {"number": item.amount},
