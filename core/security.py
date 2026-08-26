@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from authlib.jose import JoseError, jwt
 from fastapi import Depends, HTTPException, Request, status
@@ -12,7 +12,17 @@ from models.users import User
 ACCESS_TOKEN_COOKIE = "access_token"
 ACCESS_TOKEN_TTL = timedelta(days=7)
 ACCESS_TOKEN_MAX_AGE = int(ACCESS_TOKEN_TTL.total_seconds())
-COOKIE_SAMESITE = "lax"
+
+
+def create_access_token(user_id: int) -> str:
+    payload = {
+        "user_id": user_id,
+        "exp": datetime.now(timezone.utc) + ACCESS_TOKEN_TTL,
+    }
+    token = jwt.encode({"alg": "HS256"}, payload, settings.jwt_secret)
+    if isinstance(token, bytes):
+        return token.decode("utf-8")
+    return token
 
 
 async def get_current_user(
@@ -27,15 +37,15 @@ async def get_current_user(
         )
 
     try:
-        claims = jwt.decode(token, settings.jwt_secret)
-        claims.validate()
+        user_claims = jwt.decode(token, settings.jwt_secret)
+        user_claims.validate()
     except JoseError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         )
 
-    user_id = claims.get("user_id")
+    user_id = user_claims.get("user_id")
     if user_id is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

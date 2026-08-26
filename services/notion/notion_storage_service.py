@@ -1,6 +1,7 @@
 import asyncio
 
-from notion_client import AsyncClient
+from notion_client import APIResponseError, AsyncClient
+from notion_client.errors import APIErrorCode
 from typing import List, Callable, Dict, Any, Optional, Tuple
 
 from services.storage.abstract_storage_strategy import StorageStrategy
@@ -14,6 +15,10 @@ from services.notion.property_config import (
 
 class NoSharedNotionPageError(Exception):
     """Raised when the integration has no shared parent page to create a database under."""
+
+
+def is_invalid_token_error(exc: APIResponseError) -> bool:
+    return exc.code in {APIErrorCode.Unauthorized, APIErrorCode.RestrictedResource}
 
 
 def _format_database_id(database_id: str) -> str:

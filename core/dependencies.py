@@ -15,9 +15,21 @@ from services.storage.backup_storage import BackupStorage
 from services.storage.resilient_storage_service import ResilientStorageService
 from services.storage.user_storage import get_notion_config
 from services.extraction.gemini_extractor import GeminiExtractor
+from services.auth.auth_service import AuthService
+from services.storage.storage_config_service import StorageConfigService
 from services.upload.expense_upload_orchestrator import ExpenseUploadOrchestrator
 from services.upload.text_expense_orchestrator import TextExpenseOrchestrator
 from services.upload.voice_expense_orchestrator import VoiceExpenseOrchestrator
+
+
+def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
+    return AuthService(db)
+
+
+def get_storage_config_service(
+    db: AsyncSession = Depends(get_db),
+) -> StorageConfigService:
+    return StorageConfigService(db)
 
 
 async def get_storage_service(
