@@ -1,7 +1,7 @@
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.crypto import decrypt_secret
+from core.crypto import decrypt_credentials
 from core.db import get_db
 from core.security import get_current_user
 from models.users import User
@@ -37,13 +37,13 @@ async def get_storage_service(
     current_user: User = Depends(get_current_user),
 ) -> ResilientStorageService:
     config = await get_notion_config(db, current_user.id)
-    if not config or not config.is_active:
+    if not config or not config.target_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Notion is not connected",
         )
 
-    token = decrypt_secret(config.encrypted_credentials)
+    token = decrypt_credentials(config.encrypted_credentials)["access_token"]
     notion_service = NotionStorageService(
         token=token,
         database_id=config.target_id,

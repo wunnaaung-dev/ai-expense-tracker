@@ -11,6 +11,10 @@ _DEFAULT_ALLOWED_ORIGINS = (
 class Settings(BaseSettings):
     gemini_api_key: str = ""
     redirect_uri: str = ""
+    notion_client_id: str = ""
+    notion_client_secret: str = ""
+    notion_redirect_uri: str = ""
+    frontend_url: str = "http://localhost:5173"
     database_url: str = ""
     jwt_secret: str = ""
     session_secret: str = ""

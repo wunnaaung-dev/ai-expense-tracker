@@ -1,9 +1,8 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from constants.storage_providers import NOTION_PROVIDER
 from models.storage import UserStorageConfig
-
-NOTION_PROVIDER = "notion"
 
 
 async def get_notion_config(db: AsyncSession, user_id: int) -> UserStorageConfig | None:

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from notion_client import APIResponseError, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.crypto import encrypt_secret
+from core.crypto import encrypt_credentials
 from models.storage import UserStorageConfig
 from schemas.storage import StorageStatusResponse
 from services.notion.notion_storage_service import (
@@ -30,7 +30,7 @@ class StorageConfigService:
 
     async def get_status(self, user_id: int) -> StorageStatusResponse:
         config = await get_notion_config(self.db, user_id)
-        if not config or not config.is_active:
+        if not config or not config.target_id:
             return StorageStatusResponse(connected=False)
         return StorageStatusResponse(
             connected=True,
@@ -42,12 +42,11 @@ class StorageConfigService:
     async def connect_notion(self, user_id: int, token: str) -> StorageStatusResponse:
         config = await get_notion_config(self.db, user_id)
         database_id = await self._resolve_database_id(token, config)
-        encrypted = encrypt_secret(token)
+        encrypted = encrypt_credentials({"access_token": token})
 
         if config:
             config.encrypted_credentials = encrypted
             config.target_id = database_id
-            config.is_active = True
             config.connected_at = datetime.now(timezone.utc)
         else:
             config = UserStorageConfig(
@@ -55,7 +54,6 @@ class StorageConfigService:
                 provider=NOTION_PROVIDER,
                 encrypted_credentials=encrypted,
                 target_id=database_id,
-                is_active=True,
             )
             self.db.add(config)
 
