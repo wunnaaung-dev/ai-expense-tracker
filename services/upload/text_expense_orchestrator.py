@@ -15,6 +15,8 @@ class TextExpenseOrchestrator:
         if not items:
             return [self._no_expense_found_result()]
 
+        for item in items:
+            item.source = "text"
         return await self.storage.insert_many(items)
 
     async def _extract(self, text: str) -> List[ExpenseData]:

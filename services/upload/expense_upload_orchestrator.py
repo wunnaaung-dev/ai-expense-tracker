@@ -66,6 +66,8 @@ class ExpenseUploadOrchestrator:
         if not valid_items:
             return
 
+        for item in valid_items:
+            item.source = "slip"
         save_results = await self.storage.insert_many(valid_items)
 
         for i, r in enumerate(results):
