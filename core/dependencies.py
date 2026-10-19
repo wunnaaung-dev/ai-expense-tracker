@@ -1,29 +1,29 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from constants.storage_providers import GOOGLE_SHEETS_PROVIDER, NOTION_PROVIDER
+from constants.storage_status import STATUS_NEEDS_PERMISSION, STATUS_NONE, STATUS_READY
 from core.crypto import decrypt_credentials
 from core.db import get_db
 from core.security import get_current_user
+from models.storage import UserStorageConfig
 from models.users import User
+from services.auth.auth_service import AuthService
 from services.dedup.hash_checker import DuplicateChecker
 from services.extraction.abstract_audio_extraction_strategy import AudioExtractionStrategy
 from services.extraction.abstract_image_extraction_strategy import ImageExtractionStrategy
 from services.extraction.abstract_text_extraction_strategy import TextExtractionStrategy
-from services.storage.abstract_storage_strategy import StorageStrategy
-from services.notion.notion_storage_service import NotionStorageService
-from constants.storage_providers import GOOGLE_SHEETS_PROVIDER
-from constants.storage_status import STATUS_NEEDS_PERMISSION, STATUS_NONE
-from services.google.errors import GooglePermissionError
-from services.google_sheets.google_sheets_storage import GoogleSheetsStorage
-from services.storage.errors import StorageNotReadyError
-from services.storage.user_storage import get_notion_config, get_storage_config, set_storage_status
-from services.google.credentials import get_google_access_token
-from services.google.google_api import GoogleApi
-from services.google_sheets.provisioning import SheetsProvisioningService
-from models.storage import UserStorageConfig
 from services.extraction.gemini_extractor import GeminiExtractor
-from services.auth.auth_service import AuthService
+from services.google.credentials import get_google_access_token
+from services.google.errors import GooglePermissionError
+from services.google.google_api import GoogleApi
+from services.google_sheets.google_sheets_storage import GoogleSheetsStorage
+from services.google_sheets.provisioning import SheetsProvisioningService
+from services.notion.notion_storage_service import NotionStorageService
+from services.storage.abstract_storage_strategy import StorageStrategy
+from services.storage.errors import StorageNotReadyError
 from services.storage.storage_config_service import StorageConfigService
+from services.storage.user_storage import get_storage_config, set_storage_status
 from services.upload.expense_upload_orchestrator import ExpenseUploadOrchestrator
 from services.upload.text_expense_orchestrator import TextExpenseOrchestrator
 from services.upload.voice_expense_orchestrator import VoiceExpenseOrchestrator
@@ -87,18 +87,20 @@ async def get_storage_service(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> StorageStrategy:
-    config = await get_notion_config(db, current_user.id)
-    if not config or not config.target_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Notion is not connected",
-        )
+    """The backend for the user's default provider, only once it's ready."""
+    provider = current_user.default_storage_provider
+    config = await get_storage_config(db, current_user.id, provider)
+    storage_status = config.storage_status if config else STATUS_NONE
+    if config is None or storage_status != STATUS_READY or not config.target_id:
+        raise StorageNotReadyError(storage_status)
 
-    token = decrypt_credentials(config.encrypted_credentials)["access_token"]
-    return NotionStorageService(
-        token=token,
-        database_id=config.target_id,
-    )
+    if provider == NOTION_PROVIDER:
+        token = decrypt_credentials(config.encrypted_credentials)["access_token"]
+        return NotionStorageService(token=token, database_id=config.target_id)
+    if provider == GOOGLE_SHEETS_PROVIDER:
+        return await build_sheets_storage(db, config)
+    raise StorageNotReadyError(STATUS_NONE)
+
 
 def get_duplicate_checker(
     db: AsyncSession = Depends(get_db),
