@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEFAULT_ALLOWED_ORIGINS = (
@@ -10,6 +11,9 @@ _DEFAULT_ALLOWED_ORIGINS = (
 
 class Settings(BaseSettings):
     gemini_api_key: str = ""
+    # Required: startup fails fast if these are missing.
+    google_client_id: str = Field(min_length=1)
+    google_client_secret: str = Field(min_length=1)
     redirect_uri: str = ""
     notion_client_id: str = ""
     notion_client_secret: str = ""

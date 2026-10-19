@@ -24,11 +24,18 @@ class AuthService:
 
     async def get_or_create_google_user(self, user_info: dict) -> User:
         google_sub = user_info.get("sub")
+        now = datetime.now(timezone.utc)
         result = await self.db.execute(
             select(User).where(User.google_sub == google_sub)
         )
         user = result.scalar_one_or_none()
         if user:
+            user.name = user_info.get("name")
+            user.last_login_at = now
+            if user_info.get("email"):
+                user.email = user_info["email"]
+            await self.db.commit()
+            await self.db.refresh(user)
             return user
 
         user = User(
@@ -36,6 +43,7 @@ class AuthService:
             email=user_info.get("email"),
             name=user_info.get("name"),
             default_storage_provider=GOOGLE_SHEETS_PROVIDER,
+            last_login_at=now,
         )
         self.db.add(user)
         await self.db.commit()
