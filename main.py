@@ -1,12 +1,11 @@
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from core.config import settings
+from core.errors import register_exception_handlers
 from routers import auth, expense, health, storage
-from services.storage.errors import StorageWriteError
 
 app = FastAPI()
 
@@ -25,14 +24,7 @@ app.include_router(expense.router)
 app.include_router(storage.router)
 app.include_router(auth.router)
 
-
-@app.exception_handler(StorageWriteError)
-async def storage_write_error_handler(request: Request, exc: StorageWriteError):
-    # Nothing is kept server-side: the frontend keeps the draft and offers Retry.
-    return JSONResponse(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        content={"code": "storage_write_failed", "message": str(exc)},
-    )
+register_exception_handlers(app)
 
 @app.get("/")
 async def root():

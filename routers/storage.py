@@ -2,10 +2,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from constants.storage_status import STATUS_FAILED, STATUS_NEEDS_PERMISSION, STATUS_PROVISIONING
-from core.dependencies import get_sheets_provisioning_service, get_storage_config_service
+from core.dependencies import (
+    get_sheets_provisioning_service,
+    get_sheets_storage,
+    get_storage_config_service,
+)
 from core.security import get_current_user
 from models.users import User
 from schemas.storage import NotionConnectRequest, StorageStatusResponse
+from services.google_sheets.google_sheets_storage import GoogleSheetsStorage
 from services.google_sheets.provisioning import SheetsProvisioningService
 from services.notion.notion_storage_service import NoSharedNotionPageError
 from services.storage.storage_config_service import (
@@ -82,4 +87,15 @@ async def provision_sheets_storage(
     if result in _PROVISION_ERRORS:
         status_code, code = _PROVISION_ERRORS[result]
         return JSONResponse(status_code=status_code, content={"code": code, "status": result})
+    return await service.get_status(current_user.id)
+
+
+@router.post("/storage/repair", response_model=StorageStatusResponse)
+async def repair_sheets_storage(
+    current_user: User = Depends(get_current_user),
+    storage: GoogleSheetsStorage = Depends(get_sheets_storage),
+    service: SheetsProvisioningService = Depends(get_sheets_provisioning_service),
+):
+    # Re-adds missing required columns (or the tab); errors map via core/errors.py.
+    await storage.repair()
     return await service.get_status(current_user.id)

@@ -11,7 +11,12 @@ from services.extraction.abstract_image_extraction_strategy import ImageExtracti
 from services.extraction.abstract_text_extraction_strategy import TextExtractionStrategy
 from services.storage.abstract_storage_strategy import StorageStrategy
 from services.notion.notion_storage_service import NotionStorageService
-from services.storage.user_storage import get_notion_config
+from constants.storage_providers import GOOGLE_SHEETS_PROVIDER
+from constants.storage_status import STATUS_NEEDS_PERMISSION, STATUS_NONE
+from services.google.errors import GooglePermissionError
+from services.google_sheets.google_sheets_storage import GoogleSheetsStorage
+from services.storage.errors import StorageNotReadyError
+from services.storage.user_storage import get_notion_config, get_storage_config, set_storage_status
 from services.google.credentials import get_google_access_token
 from services.google.google_api import GoogleApi
 from services.google_sheets.provisioning import SheetsProvisioningService
@@ -31,6 +36,38 @@ def get_sheets_provisioning_service(
         return GoogleApi(await get_google_access_token(db, config))
 
     return SheetsProvisioningService(db, api_factory)
+
+
+async def build_sheets_storage(
+    db: AsyncSession,
+    config: UserStorageConfig,
+) -> GoogleSheetsStorage:
+    try:
+        token = await get_google_access_token(db, config)
+    except GooglePermissionError:
+        await set_storage_status(db, config, STATUS_NEEDS_PERMISSION)
+        raise
+
+    async def on_status(status: str) -> None:
+        await set_storage_status(db, config, status)
+
+    return GoogleSheetsStorage(
+        api=GoogleApi(token),
+        spreadsheet_id=config.target_id,
+        user_id=config.user_id,
+        on_status=on_status,
+    )
+
+
+async def get_sheets_storage(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> GoogleSheetsStorage:
+    """The user's spreadsheet regardless of schema state (used by repair)."""
+    config = await get_storage_config(db, current_user.id, GOOGLE_SHEETS_PROVIDER)
+    if config is None or not config.target_id:
+        raise StorageNotReadyError(config.storage_status if config else STATUS_NONE)
+    return await build_sheets_storage(db, config)
 
 
 def get_auth_service(
