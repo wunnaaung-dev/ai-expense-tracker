@@ -7,11 +7,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from constants.storage_providers import GOOGLE_SHEETS_PROVIDER, NOTION_PROVIDER
+from constants.storage_status import STATUS_FAILED, STATUS_NEEDS_PERMISSION
 from core.crypto import decrypt_credentials, encrypt_credentials
 from core.security import create_access_token
 from models.storage import UserStorageConfig
 from models.users import User
 from services.google.credentials import has_sheets_scopes, merge_google_credentials
+from services.google_sheets.provisioning import SheetsProvisioningService
 from services.storage.user_storage import get_notion_config, get_storage_config
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,7 @@ GOOGLE_LOGIN_OK = "ok"
 GOOGLE_LOGIN_NEEDS_PERMISSION = "needs_permission"
 # No refresh token from Google and none stored: the caller should re-run consent once.
 GOOGLE_LOGIN_NEEDS_REFRESH_TOKEN = "needs_refresh_token"
+GOOGLE_LOGIN_PROVISIONING_FAILED = "provisioning_failed"
 
 
 @dataclass
@@ -39,8 +42,9 @@ class GoogleLoginResult:
 
 
 class AuthService:
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, provisioning: SheetsProvisioningService | None = None):
         self.db = db
+        self.provisioning = provisioning
 
     async def get_or_create_google_user(self, user_info: dict) -> User:
         google_sub = user_info.get("sub")
@@ -86,12 +90,27 @@ class AuthService:
         jwt_token = create_access_token(user.id)
 
         if not credentials.get("refresh_token"):
+            # The caller re-runs consent; provision on that return trip.
             outcome = GOOGLE_LOGIN_NEEDS_REFRESH_TOKEN
-        elif not has_sheets_scopes(credentials.get("scope")):
-            outcome = GOOGLE_LOGIN_NEEDS_PERMISSION
         else:
-            outcome = GOOGLE_LOGIN_OK
+            outcome = await self._provision_storage(user.id, credentials)
         return GoogleLoginResult(user=user, access_token=jwt_token, outcome=outcome)
+
+    async def _provision_storage(self, user_id: int, credentials: dict) -> str:
+        if self.provisioning is None:
+            return GOOGLE_LOGIN_OK if has_sheets_scopes(credentials.get("scope")) else GOOGLE_LOGIN_NEEDS_PERMISSION
+        # A storage problem must never fail the login itself.
+        try:
+            status = await self.provisioning.ensure_spreadsheet(user_id)
+        except Exception:
+            logger.exception("Unexpected provisioning error for user %s", user_id)
+            return GOOGLE_LOGIN_PROVISIONING_FAILED
+        if status == STATUS_NEEDS_PERMISSION:
+            return GOOGLE_LOGIN_NEEDS_PERMISSION
+        if status == STATUS_FAILED:
+            return GOOGLE_LOGIN_PROVISIONING_FAILED
+        # ready, schema_broken, or another request is provisioning: the frontend reads /storage/status.
+        return GOOGLE_LOGIN_OK
 
     async def _upsert_google_credentials(self, user_id: int, token: dict) -> dict:
         config = await get_storage_config(self.db, user_id, GOOGLE_SHEETS_PROVIDER)

@@ -1,6 +1,9 @@
 from sqlalchemy import CheckConstraint, Column, Integer, String, DateTime, ForeignKey, Text, UniqueConstraint
 from datetime import datetime, timezone
+from constants.storage_status import STATUS_NONE, STORAGE_STATUSES
 from .base import Base
+
+_STATUS_VALUES = ", ".join(f"'{status}'" for status in STORAGE_STATUSES)
 
 class UserStorageConfig(Base):
     __tablename__ = "user_storage_config"
@@ -9,6 +12,10 @@ class UserStorageConfig(Base):
         CheckConstraint(
             "provider IN ('notion', 'google_sheets')",
             name="ck_user_storage_config_provider",
+        ),
+        CheckConstraint(
+            f"storage_status IN ({_STATUS_VALUES})",
+            name="ck_user_storage_config_status",
         ),
     )
     id = Column(Integer, primary_key=True)
@@ -23,6 +30,10 @@ class UserStorageConfig(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+    # Lifecycle of target_id: none | provisioning | ready | failed | needs_permission | schema_broken | missing.
+    storage_status = Column(String, nullable=False, default=STATUS_NONE, server_default=STATUS_NONE)
+    # Also the provisioning lease start while storage_status is "provisioning".
+    status_changed_at = Column(DateTime(timezone=True), nullable=True)
 
 class ExpensesDedup(Base):
     __tablename__ = "expenses_dedup"

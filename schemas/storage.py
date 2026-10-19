@@ -13,3 +13,5 @@ class StorageStatusResponse(BaseModel):
     provider: Optional[str] = None
     target_id: Optional[str] = None
     connected_at: Optional[datetime] = None
+    # none | provisioning | ready | failed | needs_permission | schema_broken | missing
+    status: Optional[str] = None

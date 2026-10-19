@@ -12,6 +12,10 @@ from services.extraction.abstract_text_extraction_strategy import TextExtraction
 from services.storage.abstract_storage_strategy import StorageStrategy
 from services.notion.notion_storage_service import NotionStorageService
 from services.storage.user_storage import get_notion_config
+from services.google.credentials import get_google_access_token
+from services.google.google_api import GoogleApi
+from services.google_sheets.provisioning import SheetsProvisioningService
+from models.storage import UserStorageConfig
 from services.extraction.gemini_extractor import GeminiExtractor
 from services.auth.auth_service import AuthService
 from services.storage.storage_config_service import StorageConfigService
@@ -20,8 +24,20 @@ from services.upload.text_expense_orchestrator import TextExpenseOrchestrator
 from services.upload.voice_expense_orchestrator import VoiceExpenseOrchestrator
 
 
-def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
-    return AuthService(db)
+def get_sheets_provisioning_service(
+    db: AsyncSession = Depends(get_db),
+) -> SheetsProvisioningService:
+    async def api_factory(config: UserStorageConfig) -> GoogleApi:
+        return GoogleApi(await get_google_access_token(db, config))
+
+    return SheetsProvisioningService(db, api_factory)
+
+
+def get_auth_service(
+    db: AsyncSession = Depends(get_db),
+    provisioning: SheetsProvisioningService = Depends(get_sheets_provisioning_service),
+) -> AuthService:
+    return AuthService(db, provisioning)
 
 
 def get_storage_config_service(
