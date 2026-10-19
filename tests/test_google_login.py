@@ -42,7 +42,7 @@ async def test_login_stores_encrypted_credentials(db):
     assert result.outcome == GOOGLE_LOGIN_OK
     config = (await db.execute(select(UserStorageConfig))).scalar_one()
     assert config.provider == "google_sheets"
-    assert "rt" not in config.encrypted_credentials
+    assert "refresh_token" not in config.encrypted_credentials
     assert decrypt_credentials(config.encrypted_credentials)["refresh_token"] == "rt"
 
 
