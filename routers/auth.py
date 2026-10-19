@@ -16,7 +16,7 @@ from core.security import (
 from models.users import User
 from services.auth.auth_service import AuthService, NotionLoginError
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 def _frontend_redirect(**params: str) -> RedirectResponse:
