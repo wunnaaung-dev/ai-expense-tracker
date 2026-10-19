@@ -5,6 +5,7 @@ from notion_client.errors import APIErrorCode
 from typing import List, Callable, Dict, Any, Optional, Tuple
 
 from services.storage.abstract_storage_strategy import StorageStrategy
+from services.storage.errors import StorageWriteError
 from schemas.expense import BatchResult, ExpenseData
 from services.notion.property_config import (
     EXPENSE_DB_SCHEMA,
@@ -92,7 +93,11 @@ class NotionStorageService(StorageStrategy):
 
     async def insert_many(self, items: List[ExpenseData]) -> List[BatchResult]:
         tasks = [self._insert_one(item) for item in items]
-        return await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks)
+        # Partial failures stay per-item; a write where nothing landed is a storage failure.
+        if results and all(r.status == "failed" for r in results):
+            raise StorageWriteError(results[0].error or "Notion write failed")
+        return results
 
     async def get_all(self, page_size: int, start_cursor: Optional[str] = None) -> Tuple[List[ExpenseData], Optional[str]]:
         async with self.semaphore:

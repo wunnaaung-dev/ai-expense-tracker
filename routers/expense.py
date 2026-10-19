@@ -3,8 +3,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from core.dependencies import get_expense_upload_orchestrator, get_storage_service, get_text_expense_orchestrator, get_voice_expense_orchestrator
 
 from core.security import get_current_user
-from services.notion.notion_storage_service import NotionStorageService
-from services.storage.resilient_storage_service import ResilientStorageService
+from services.storage.abstract_storage_strategy import StorageStrategy
 from schemas.expense import BatchResult, ExpenseListResponse, TextExpenseRequest
 
 from typing import List, Optional
@@ -21,9 +20,9 @@ MAX_FILES = 10
 async def get_all_expenses(
     page_size: int = Query(default=10, ge=1, le=100),
     start_cursor: Optional[str] = Query(default=None),
-    notion_service: ResilientStorageService = Depends(get_storage_service)
+    storage: StorageStrategy = Depends(get_storage_service)
 ):
-    expenses, next_cursor = await notion_service.get_all(page_size, start_cursor)
+    expenses, next_cursor = await storage.get_all(page_size, start_cursor)
     return ExpenseListResponse(expenses=expenses, next_cursor=next_cursor)
 
 ALLOWED_AUDIO_TYPES = {"audio/webm", "audio/ogg", "audio/wav", "audio/mp4", "audio/mpeg", "audio/x-m4a"}
@@ -48,18 +47,6 @@ async def log_expense_from_text(
 ):
     return await orchestrator.process(request.text)
 
-
-@router.post("/expense/sync-backup")
-async def sync_backup(
-    storage: ResilientStorageService = Depends(get_storage_service)
-):
-    results = await storage.sync_backup()
-    return {
-        "synced_count": len([r for r in results if r.status == "success"]),
-        "failed_count": len([r for r in results if r.status == "failed"]),
-        "results": results
-    }
-    
 
 @router.post("/expense/voice", response_model=list[BatchResult])
 async def log_expense_from_voice(

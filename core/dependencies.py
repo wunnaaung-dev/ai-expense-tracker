@@ -11,8 +11,6 @@ from services.extraction.abstract_image_extraction_strategy import ImageExtracti
 from services.extraction.abstract_text_extraction_strategy import TextExtractionStrategy
 from services.storage.abstract_storage_strategy import StorageStrategy
 from services.notion.notion_storage_service import NotionStorageService
-from services.storage.backup_storage import BackupStorage
-from services.storage.resilient_storage_service import ResilientStorageService
 from services.storage.user_storage import get_notion_config
 from services.extraction.gemini_extractor import GeminiExtractor
 from services.auth.auth_service import AuthService
@@ -35,7 +33,7 @@ def get_storage_config_service(
 async def get_storage_service(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> ResilientStorageService:
+) -> StorageStrategy:
     config = await get_notion_config(db, current_user.id)
     if not config or not config.target_id:
         raise HTTPException(
@@ -44,12 +42,10 @@ async def get_storage_service(
         )
 
     token = decrypt_credentials(config.encrypted_credentials)["access_token"]
-    notion_service = NotionStorageService(
+    return NotionStorageService(
         token=token,
         database_id=config.target_id,
     )
-    backup = BackupStorage(user_id=current_user.id)
-    return ResilientStorageService(primary=notion_service, backup=backup)
 
 def get_duplicate_checker(
     db: AsyncSession = Depends(get_db),
