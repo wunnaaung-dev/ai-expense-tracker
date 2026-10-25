@@ -9,6 +9,15 @@ DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
 REQUEST_TIMEOUT_SECONDS = 20
 
 
+def _error_reason(error: dict) -> str:
+    """Google's machine-readable cause, e.g. SERVICE_DISABLED or insufficientPermissions."""
+    for detail in error.get("details", []):
+        if detail.get("@type", "").endswith("google.rpc.ErrorInfo") and detail.get("reason"):
+            return detail["reason"]
+    errors = error.get("errors") or [{}]
+    return errors[0].get("reason") or error.get("status", "")
+
+
 class GoogleApi:
     """Thin async client for the Sheets/Drive endpoints this app uses.
 
@@ -29,10 +38,10 @@ class GoogleApi:
 
         if response.is_error:
             try:
-                reason = response.json().get("error", {}).get("message", "")
+                error = response.json().get("error", {})
             except ValueError:
-                reason = response.text
-            raise GoogleApiError(response.status_code, reason)
+                raise GoogleApiError(response.status_code, response.text)
+            raise GoogleApiError(response.status_code, error.get("message", ""), _error_reason(error))
         return response.json() if response.content else {}
 
     # --- Drive ---------------------------------------------------------------

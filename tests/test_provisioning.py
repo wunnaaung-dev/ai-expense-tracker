@@ -70,7 +70,7 @@ async def test_first_login_creates_exactly_one_spreadsheet(db, fake):
     assert sorted(v for k, v in keys if k == "et_field") == sorted(f.name for f in FIELDS)
 
     validations = [r for r in spreadsheet.other_requests if "setDataValidation" in r]
-    assert len(validations) == 2
+    assert len(validations) == 4  # type, source, currency, payment channel
     protection = [r for r in spreadsheet.other_requests if "addProtectedRange" in r]
     assert protection[0]["addProtectedRange"]["protectedRange"]["warningOnly"] is True
 
@@ -122,6 +122,18 @@ async def test_provisioning_error_sets_failed_but_login_succeeds(db, fake):
     # Retry (POST /storage/provision) succeeds and doesn't leave a second file behind.
     status = await provisioning_for(db, fake).ensure_spreadsheet(result.user.id)
     assert status == STATUS_READY
+
+
+async def test_disabled_api_logs_reason_and_hint(db, fake, caplog):
+    fake.fail["create_spreadsheet"] = GoogleApiError(
+        403, "Google Sheets API has not been used in project 123 before or it is disabled.", "SERVICE_DISABLED"
+    )
+
+    result = await login(db, fake)
+
+    assert result.outcome == GOOGLE_LOGIN_PROVISIONING_FAILED
+    assert "Google API error 403 (SERVICE_DISABLED): Google Sheets API has not been used" in caplog.text
+    assert "Enable the Google Drive API and Google Sheets API" in caplog.text
 
 
 async def test_failed_setup_is_retried_without_duplicate(db, fake):

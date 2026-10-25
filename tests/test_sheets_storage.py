@@ -5,14 +5,15 @@ from fastapi.testclient import TestClient
 
 from constants.storage_status import (
     STATUS_MISSING,
+    STATUS_NEEDS_PERMISSION,
     STATUS_READY,
     STATUS_SCHEMA_BROKEN,
 )
 from core.dependencies import get_sheets_provisioning_service, get_sheets_storage
 from core.security import get_current_user
 from main import app
-from schemas.expense import ExpenseData
-from services.google.errors import GoogleApiError
+from schemas.expense import EntryFilter, ExpenseData
+from services.google.errors import GoogleApiError, GooglePermissionError
 from services.google_sheets import google_sheets_storage
 from services.google_sheets.errors import (
     RecordNotFoundError,
@@ -77,7 +78,7 @@ async def insert(storage, *items):
 async def all_records(storage):
     # Simulates the cache TTL expiring after a user edit.
     storage.invalidate_columns()
-    records, _ = await storage.get_all(page_size=100)
+    records = await storage.get_all(EntryFilter())
     return {r.description: r for r in records}
 
 
@@ -98,9 +99,8 @@ async def test_insert_assigns_uuid_and_writes_typed_cells(storage, fake):
 async def test_crud_roundtrip(storage):
     lunch_id, taxi_id = await insert(storage, expense("lunch", day=2), expense("taxi", day=3))
 
-    records, cursor = await storage.get_all(page_size=10)
+    records = await storage.get_all(EntryFilter())
     assert [r.description for r in records] == ["taxi", "lunch"]  # newest first
-    assert cursor is None
 
     await storage.update(lunch_id, {"amount": 99, "category": "Food", "type": "income"})
     await storage.delete(taxi_id)
@@ -112,14 +112,22 @@ async def test_crud_roundtrip(storage):
     assert records["lunch"].type == "income"
 
 
-async def test_get_all_paginates(storage):
-    await insert(storage, *[expense(f"e{day}", day=day) for day in range(1, 6)])
-    page1, cursor = await storage.get_all(page_size=2)
-    page2, cursor2 = await storage.get_all(page_size=2, start_cursor=cursor)
-    _, cursor3 = await storage.get_all(page_size=2, start_cursor=cursor2)
-    assert [r.description for r in page1] == ["e5", "e4"]
-    assert [r.description for r in page2] == ["e3", "e2"]
-    assert cursor3 is None
+async def test_get_all_filters_by_date_category_and_search(storage):
+    await insert(
+        storage,
+        expense("Coffee beans", day=1, category="Food"),
+        expense("taxi home", day=2, category="Transport"),
+        expense("iced coffee", day=3, category="Food"),
+        expense("rent", day=4, category="Housing"),
+    )
+    records = await storage.get_all(EntryFilter(date_from=date(2026, 10, 2), date_to=date(2026, 10, 3)))
+    assert [r.description for r in records] == ["iced coffee", "taxi home"]
+    records = await storage.get_all(EntryFilter(category="food"))
+    assert [r.description for r in records] == ["iced coffee", "Coffee beans"]
+    records = await storage.get_all(EntryFilter(search="COFFEE"))
+    assert [r.description for r in records] == ["iced coffee", "Coffee beans"]
+    records = await storage.get_all(EntryFilter(search="transp"))  # matches the category too
+    assert [r.description for r in records] == ["taxi home"]
 
 
 async def test_unknown_record_raises(storage):
@@ -258,7 +266,7 @@ async def test_transactions_tab_deleted_then_repaired(storage, fake, status_log)
     spreadsheet.metadata = [m for m in spreadsheet.metadata if m.get("sheet_id") != old_tab.sheet_id]
 
     with pytest.raises(SheetSchemaBrokenError):
-        await storage.get_all(page_size=10)
+        await storage.get_all(EntryFilter())
     assert status_log.last == STATUS_SCHEMA_BROKEN
 
     await storage.repair()
@@ -286,6 +294,71 @@ async def test_writes_ignore_a_stale_cached_mapping(storage, fake):
     assert fake.values_by_header()[0]["Amount"] == 12
 
 
+# --- currency --------------------------------------------------------------------
+
+async def test_currency_roundtrip_keeps_amount(storage, fake):
+    await insert(storage, expense("mohinga", 3500, currency="MMK"))
+
+    row = fake.values_by_header()[0]
+    assert (row["Amount"], row["Currency"]) == (3500, "MMK")
+    record = (await all_records(storage))["mohinga"]
+    assert (record.amount, record.currency) == (3500, "MMK")
+    validations = [r["setDataValidation"]["rule"]["condition"]["values"] for r in fake.only().other_requests if "setDataValidation" in r]
+    assert [{"userEnteredValue": c} for c in ("THB", "MMK", "USD")] in validations
+
+
+async def test_sheet_without_currency_column_reads_thb_and_adds_it_on_write(storage, fake, status_log):
+    await insert(storage, expense("old", currency="USD"))
+    fake.delete_column("Currency")  # a sheet created before currencies existed
+
+    records = await all_records(storage)
+    assert records["old"].currency == "THB"
+    assert status_log.last == STATUS_READY
+
+    await insert(storage, expense("new", currency="USD"))
+    assert fake.main_tab().grid()[0][-1] == "Currency"
+    records = await all_records(storage)
+    assert (records["old"].currency, records["new"].currency) == ("THB", "USD")
+    assert status_log.last == STATUS_READY
+
+
+async def test_repair_adds_currency_column(storage, fake):
+    fake.delete_column("Currency")
+    await storage.repair()
+    assert fake.main_tab().grid()[0][-1] == "Currency"
+    assert "currency" in (await storage.resolve_columns(fresh=True)).columns
+
+
+async def test_get_all_filters_by_currency(storage, fake):
+    await insert(
+        storage,
+        expense("thb", currency="THB", day=1),
+        expense("mmk", currency="MMK", day=2),
+        expense("usd", currency="USD", day=3),
+        expense("blank", day=4),  # no currency cell: counts as THB
+    )
+    records = await storage.get_all(EntryFilter(currency="THB"))
+    assert [r.description for r in records] == ["blank", "thb"]
+    records = await storage.get_all(EntryFilter(currency="MMK"))
+    assert [r.description for r in records] == ["mmk"]
+
+
+
+async def test_get_all_filters_by_type(storage, fake):
+    await insert(
+        storage,
+        expense("lunch", day=1),
+        expense("salary", day=2, type="income", category="Salary"),
+        expense("bus", day=3),
+        expense("gift", day=4, type="income", category="Gift", currency="USD"),
+    )
+    records = await storage.get_all(EntryFilter(entry_type="expense"))
+    assert [r.description for r in records] == ["bus", "lunch"]
+    records = await storage.get_all(EntryFilter(entry_type="income"))
+    assert [r.description for r in records] == ["gift", "salary"]
+    records = await storage.get_all(EntryFilter(currency="USD", entry_type="income"))
+    assert [r.description for r in records] == ["gift"]
+
 # --- missing spreadsheet / API failures ------------------------------------------
 
 @pytest.mark.parametrize("how", ["deleted", "trashed"])
@@ -293,7 +366,7 @@ async def test_spreadsheet_gone_sets_missing(storage, fake, status_log, how):
     setattr(fake.only(), how, True)
 
     with pytest.raises(SpreadsheetMissingError):
-        await storage.get_all(page_size=10)
+        await storage.get_all(EntryFilter())
     assert status_log.last == STATUS_MISSING
 
 
@@ -302,6 +375,23 @@ async def test_api_error_on_append_is_storage_write_error(storage, fake):
     fake.fail["batch_update"] = GoogleApiError(500, "backend error")
     with pytest.raises(StorageWriteError):
         await insert(storage, expense("lunch"))
+
+
+async def test_disabled_api_is_not_treated_as_missing_permission(storage, fake, status_log, caplog):
+    await storage.resolve_columns()
+    fake.fail["batch_update"] = GoogleApiError(403, "Google Sheets API is disabled.", "SERVICE_DISABLED")
+    with pytest.raises(StorageWriteError):
+        await insert(storage, expense("lunch"))
+    assert status_log.last != STATUS_NEEDS_PERMISSION
+    assert "Enable the Google Drive API and Google Sheets API" in caplog.text
+
+
+async def test_other_403_still_needs_permission(storage, fake, status_log):
+    await storage.resolve_columns()
+    fake.fail["batch_update"] = GoogleApiError(403, "The caller does not have permission", "PERMISSION_DENIED")
+    with pytest.raises(GooglePermissionError):
+        await insert(storage, expense("lunch"))
+    assert status_log.last == STATUS_NEEDS_PERMISSION
 
 
 # --- repair endpoint ---------------------------------------------------------------
@@ -337,3 +427,51 @@ def test_repair_endpoint_maps_missing_spreadsheet(client_with_storage):
     response = client_with_storage(StubStorage(SpreadsheetMissingError("x"))).post("/api/v1/storage/repair")
     assert response.status_code == 409
     assert response.json() == {"code": "storage_missing"}
+
+
+# --- per-currency amount columns / channel dropdown ---------------------------------
+
+async def test_amount_is_copied_to_its_currency_column_only(storage, fake):
+    await insert(storage, expense("lunch", 120.5, currency="THB"), expense("mohinga", 3500, currency="MMK"))
+
+    lunch, mohinga = fake.values_by_header()
+    assert (lunch["Amount (THB)"], lunch.get("Amount (MMK)"), lunch.get("Amount (USD)")) == (120.5, None, None)
+    assert (mohinga.get("Amount (THB)"), mohinga["Amount (MMK)"]) == (None, 3500)
+    records = await all_records(storage)
+    assert (records["mohinga"].amount, records["mohinga"].currency) == (3500, "MMK")
+
+
+async def test_new_sheet_has_channel_dropdown_and_mmk_whole_numbers(fake):
+    requests = fake.only().other_requests
+    dropdowns = [r["setDataValidation"]["rule"]["condition"]["values"] for r in requests if "setDataValidation" in r]
+    assert [{"userEnteredValue": "Cash"}, {"userEnteredValue": "Bank"}] in dropdowns
+    patterns = [r["repeatCell"]["cell"]["userEnteredFormat"]["numberFormat"]["pattern"] for r in requests if "repeatCell" in r]
+    assert "#,##0" in patterns
+
+
+async def test_old_sheet_gets_amount_columns_and_new_dropdowns_on_write(storage, fake):
+    for header in ("Amount (THB)", "Amount (MMK)", "Amount (USD)"):
+        fake.delete_column(header)  # a sheet created before these columns existed
+    fake.only().other_requests.clear()
+
+    await insert(storage, expense("taxi", 80, currency="USD", source="manual"))
+
+    assert fake.main_tab().grid()[0][-3:] == ["Amount (THB)", "Amount (MMK)", "Amount (USD)"]
+    assert fake.values_by_header()[0]["Amount (USD)"] == 80
+    dropdowns = [r["setDataValidation"]["rule"]["condition"]["values"] for r in fake.only().other_requests if "setDataValidation" in r]
+    assert [{"userEnteredValue": "Cash"}, {"userEnteredValue": "Bank"}] in dropdowns
+    assert {"userEnteredValue": "manual"} in next(v for v in dropdowns if {"userEnteredValue": "text"} in v)
+
+    fake.only().other_requests.clear()
+    await insert(storage, expense("bus", 20, currency="USD"))
+    assert fake.only().other_requests == []  # the upgrade runs once
+
+
+async def test_record_url_points_at_the_row(storage, fake):
+    await insert(storage, expense("a"))
+    results = await storage.insert_many([expense("b")])
+
+    url = await storage.record_url(results[0].data)
+
+    sheet_id = fake.main_tab().sheet_id
+    assert url == f"https://docs.google.com/spreadsheets/d/{fake.only().spreadsheet_id}/edit#gid={sheet_id}&range=3:3"

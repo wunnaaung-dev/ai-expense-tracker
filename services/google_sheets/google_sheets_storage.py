@@ -2,37 +2,48 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Awaitable, Callable, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, List, Optional
 
 from cachetools import TTLCache
 
+from constants.currencies import CURRENCIES, DEFAULT_CURRENCY
 from constants.storage_status import (
     STATUS_MISSING,
     STATUS_NEEDS_PERMISSION,
     STATUS_READY,
     STATUS_SCHEMA_BROKEN,
 )
-from schemas.expense import BatchResult, ExpenseData
-from services.google.errors import GoogleApiError, GooglePermissionError
+from schemas.expense import BatchResult, EntryFilter, ExpenseData
+from services.google.errors import (
+    SERVICE_DISABLED,
+    SERVICE_DISABLED_HINT,
+    GoogleApiError,
+    GooglePermissionError,
+)
 from services.google.google_api import GoogleApi
+from services.storage.filters import matches
 from services.google_sheets.errors import (
     RecordNotFoundError,
     SheetSchemaBrokenError,
     SpreadsheetMissingError,
 )
 from services.google_sheets.schema import (
+    BACKFILL_FIELDS,
+    CURRENCY_AMOUNT_FIELDS,
     FIELD_BY_NAME,
     FIELDS,
     META_FIELD_KEY,
     META_SHEET_KEY,
     META_SHEET_VALUE,
     REQUIRED_FIELDS,
+    REVALIDATED_FIELDS,
     SOURCE_VALUES,
     TAB_TITLE,
     TYPE_VALUES,
     build_tab_requests,
     column_requests,
     header_cell,
+    validation_requests,
 )
 from services.storage.abstract_storage_strategy import StorageStrategy
 from services.storage.errors import StorageWriteError
@@ -68,9 +79,16 @@ def _to_raw(field: str, value: Any) -> Any:
         if isinstance(value, str):
             value = date.fromisoformat(value)
         return (value - SHEETS_EPOCH).days
-    if field == "amount":
+    if field == "amount" or field in CURRENCY_AMOUNT_FIELDS:
         return float(value)
     return str(value)
+
+
+def _field_value(record: ExpenseData, field: str) -> Any:
+    """The value written to a column; per-currency amounts are blank unless the currency matches."""
+    if field in CURRENCY_AMOUNT_FIELDS:
+        return record.amount if record.currency == CURRENCY_AMOUNT_FIELDS[field] else None
+    return getattr(record, field)
 
 
 def _to_cell(field: str, value: Any) -> dict:
@@ -115,6 +133,7 @@ def _parse_row(row: list, columns: dict[str, int]) -> ExpenseData | None:
     source = get("source")
     record_id = get("id")
     payment_channel = get("payment_channel")
+    currency = get("currency")
     return ExpenseData(
         date=expense_date,
         amount=amount,
@@ -124,6 +143,8 @@ def _parse_row(row: list, columns: dict[str, int]) -> ExpenseData | None:
         type=record_type if record_type in TYPE_VALUES else "expense",
         payment_channel=str(payment_channel) if payment_channel is not None else None,
         source=source if source in SOURCE_VALUES else None,
+        # Rows from before currencies existed (or a blank cell) are THB.
+        currency=currency if currency in CURRENCIES else DEFAULT_CURRENCY,
     )
 
 
@@ -223,6 +244,8 @@ class GoogleSheetsStorage(StorageStrategy):
 
     async def insert_many(self, items: List[ExpenseData]) -> List[BatchResult]:
         column_map = await self.resolve_columns(fresh=True)
+        if any(name not in column_map.columns for name in BACKFILL_FIELDS):
+            column_map = await self._backfill_columns(column_map)
         width = max(column_map.columns.values()) + 1
         records = [item.model_copy(update={"id": item.id or str(uuid.uuid4())}) for item in items]
 
@@ -230,7 +253,7 @@ class GoogleSheetsStorage(StorageStrategy):
         for record in records:
             cells: list[dict] = [{} for _ in range(width)]  # unmapped (user) columns stay blank
             for name, index in column_map.columns.items():
-                cells[index] = _to_cell(name, getattr(record, name))
+                cells[index] = _to_cell(name, _field_value(record, name))
             rows.append({"values": cells})
 
         await self._write(self.api.batch_update(
@@ -239,23 +262,29 @@ class GoogleSheetsStorage(StorageStrategy):
         ))
         return [BatchResult(filename="", status="success", data=record) for record in records]
 
-    async def get_all(
-        self,
-        page_size: int,
-        start_cursor: Optional[str] = None,
-    ) -> Tuple[List[ExpenseData], Optional[str]]:
+    async def get_all(self, filters: EntryFilter) -> List[ExpenseData]:
         column_map = await self.resolve_columns()
         values = await self._call(self.api.get_grid_values(
             self.spreadsheet_id,
             {"sheetId": column_map.sheet_id, "startRowIndex": 1},
         ))
-        records = [record for row in values if (record := _parse_row(row, column_map.columns))]
+        records = [
+            record for row in values
+            if (record := _parse_row(row, column_map.columns)) and matches(record, filters)
+        ]
         records.sort(key=lambda record: record.date, reverse=True)
+        return records
 
-        offset = int(start_cursor) if start_cursor else 0
-        end = offset + page_size
-        next_cursor = str(end) if end < len(records) else None
-        return records[offset:end], next_cursor
+    async def record_url(self, record: ExpenseData) -> Optional[str]:
+        """Link that opens the spreadsheet with the record's row selected."""
+        if not record.id:
+            return None
+        column_map = await self.resolve_columns()
+        row = await self._locate(record.id, column_map) + 1  # 1-based, as shown in Sheets
+        return (
+            f"https://docs.google.com/spreadsheets/d/{self.spreadsheet_id}/edit"
+            f"#gid={column_map.sheet_id}&range={row}:{row}"
+        )
 
     # --- update / delete (not on the ABC yet) -------------------------------------
 
@@ -303,7 +332,7 @@ class GoogleSheetsStorage(StorageStrategy):
     # --- repair ---------------------------------------------------------------------
 
     async def repair(self) -> ColumnMap:
-        """Re-add missing required columns (or the whole tab) at the end, then resolve again."""
+        """Re-add missing required/backfill columns (or the whole tab) at the end, then resolve again."""
         self.invalidate_columns()
         file = await self._call(self.api.get_file(self.spreadsheet_id))
         if file.get("trashed"):
@@ -322,6 +351,14 @@ class GoogleSheetsStorage(StorageStrategy):
 
         if requests:
             await self._call(self.api.batch_update(self.spreadsheet_id, requests))
+        self.invalidate_columns()
+        return await self.resolve_columns(fresh=True)
+
+    async def _backfill_columns(self, column_map: ColumnMap) -> ColumnMap:
+        """Add optional columns that older sheets lack (e.g. Currency) before writing."""
+        properties = await self._call(self.api.get_sheet_properties(self.spreadsheet_id))
+        requests = self._missing_column_requests(column_map.sheet_id, column_map.columns, properties)
+        await self._write(self.api.batch_update(self.spreadsheet_id, requests))
         self.invalidate_columns()
         return await self.resolve_columns(fresh=True)
 
@@ -348,7 +385,10 @@ class GoogleSheetsStorage(StorageStrategy):
 
     @staticmethod
     def _missing_column_requests(sheet_id: int, columns: dict[str, int], properties: list[dict]) -> list[dict]:
-        missing = [field for field in FIELDS if field.required and field.name not in columns]
+        missing = [
+            field for field in FIELDS
+            if (field.required or field.name in BACKFILL_FIELDS) and field.name not in columns
+        ]
         if not missing:
             return []
         column_count = next(
@@ -365,6 +405,11 @@ class GoogleSheetsStorage(StorageStrategy):
                 }
             })
             requests.extend(column_requests(sheet_id, field, index))
+        # Older sheets were set up with other dropdowns (no Cash/Bank, no "manual");
+        # this runs once, together with adding the columns those sheets lack.
+        for name in REVALIDATED_FIELDS:
+            if name in columns:
+                requests.extend(validation_requests(sheet_id, FIELD_BY_NAME[name], columns[name]))
         return requests
 
     # --- helpers ----------------------------------------------------------------------
@@ -415,6 +460,10 @@ class GoogleSheetsStorage(StorageStrategy):
         """Raise the typed error for missing/permission failures; return for anything else."""
         if exc.status == 404:
             await self._missing()
+        if exc.error_reason == SERVICE_DISABLED:
+            # Our Cloud project's fault, not the user's grant: reconsent wouldn't help.
+            logger.error("Google API call for spreadsheet %s failed: %s%s", self.spreadsheet_id, exc, SERVICE_DISABLED_HINT)
+            return
         if exc.status == 401 or (exc.status == 403 and "rate" not in exc.reason.lower()):
             await self._on_status(STATUS_NEEDS_PERMISSION)
             raise GooglePermissionError(exc.reason) from exc

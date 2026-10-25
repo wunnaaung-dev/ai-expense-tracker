@@ -1,7 +1,7 @@
 import asyncio
 import hashlib
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,9 +29,25 @@ class DuplicateChecker:
         )
         return result.scalar_one_or_none() is not None
 
-    async def mark_processed(self, file_hash: str) -> None:
+    async def claim(self, file_hash: str) -> bool:
+        """Reserve a slip before saving it. False if it was already saved (or is being saved).
+
+        The (user_id, hash) unique constraint makes this safe when two tabs save at once.
+        """
         self.db.add(ExpensesDedup(user_id=self.user_id, hash=file_hash))
         try:
             await self.db.commit()
         except IntegrityError:
             await self.db.rollback()
+            return False
+        return True
+
+    async def release(self, file_hash: str) -> None:
+        """Undo claim() when the save failed, so the slip can be saved again."""
+        await self.db.execute(
+            delete(ExpensesDedup).where(
+                ExpensesDedup.user_id == self.user_id,
+                ExpensesDedup.hash == file_hash,
+            )
+        )
+        await self.db.commit()

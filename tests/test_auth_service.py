@@ -5,13 +5,14 @@ from sqlalchemy import select
 from models.users import User
 from services.auth.auth_service import AuthService
 
-GOOGLE_USER = {"sub": "google-123", "email": "a@example.com", "name": "A"}
+GOOGLE_USER = {"sub": "google-123", "email": "a@example.com", "name": "A", "picture": "https://lh3.googleusercontent.com/a/pic1"}
 
 
 async def test_new_google_user_gets_last_login_at(db):
     user = await AuthService(db).get_or_create_google_user(GOOGLE_USER)
     assert user.last_login_at is not None
     assert user.default_storage_provider == "google_sheets"
+    assert user.avatar_url == "https://lh3.googleusercontent.com/a/pic1"
 
 
 async def test_returning_google_user_updates_last_login_at_and_profile(db):
@@ -21,11 +22,14 @@ async def test_returning_google_user_updates_last_login_at_and_profile(db):
     user.last_login_at = old
     await db.commit()
 
-    again = await service.get_or_create_google_user({**GOOGLE_USER, "name": "A2", "email": "b@example.com"})
+    again = await service.get_or_create_google_user({
+        **GOOGLE_USER, "name": "A2", "email": "b@example.com", "picture": "https://lh3.googleusercontent.com/a/pic2",
+    })
 
     assert again.id == user.id
     assert again.name == "A2"
     assert again.email == "b@example.com"
+    assert again.avatar_url == "https://lh3.googleusercontent.com/a/pic2"
     assert again.last_login_at.replace(tzinfo=timezone.utc) > old + timedelta(days=1)
     rows = (await db.execute(select(User))).scalars().all()
     assert len(rows) == 1

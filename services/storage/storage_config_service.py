@@ -3,10 +3,11 @@ from datetime import datetime, timezone
 from notion_client import APIResponseError, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from constants.storage_status import STATUS_READY
+from constants.storage_status import STATUS_NONE, STATUS_READY
 from core.crypto import encrypt_credentials
 from models.storage import UserStorageConfig
-from schemas.storage import StorageStatusResponse
+from models.users import User
+from schemas.storage import StorageStatusResponse, StorageSwitchResponse
 from services.notion.notion_storage_service import (
     NoSharedNotionPageError,
     NotionStorageService,
@@ -14,7 +15,8 @@ from services.notion.notion_storage_service import (
     find_parent_page_id,
     is_invalid_token_error,
 )
-from services.storage.user_storage import NOTION_PROVIDER, get_notion_config
+from services.storage.errors import StorageNotReadyError
+from services.storage.user_storage import NOTION_PROVIDER, get_notion_config, get_storage_config
 
 
 class InvalidNotionTokenError(Exception):
@@ -31,14 +33,36 @@ class StorageConfigService:
 
     async def get_status(self, user_id: int) -> StorageStatusResponse:
         config = await get_notion_config(self.db, user_id)
-        if not config or not config.target_id:
+        if not config:
             return StorageStatusResponse(connected=False)
+        # A Notion login without a database yet reports its status so the client can offer setup.
         return StorageStatusResponse(
-            connected=True,
+            connected=config.storage_status == STATUS_READY and bool(config.target_id),
             provider=config.provider,
             target_id=config.target_id,
             connected_at=config.connected_at,
             status=config.storage_status,
+        )
+
+    async def set_default_provider(self, user: User, provider: str) -> StorageSwitchResponse:
+        """Where new entries go from now on. Existing records stay where they are (nothing is copied)."""
+        config = await get_storage_config(self.db, user.id, provider)
+        storage_status = config.storage_status if config else STATUS_NONE
+        if config is None or storage_status != STATUS_READY or not config.target_id:
+            raise StorageNotReadyError(storage_status)
+
+        if user.default_storage_provider != provider:
+            user.default_storage_provider = provider
+            await self.db.commit()
+        return StorageSwitchResponse(
+            default_storage_provider=provider,
+            storage=StorageStatusResponse(
+                connected=True,
+                provider=config.provider,
+                target_id=config.target_id,
+                connected_at=config.connected_at,
+                status=config.storage_status,
+            ),
         )
 
     async def connect_notion(self, user_id: int, token: str) -> StorageStatusResponse:

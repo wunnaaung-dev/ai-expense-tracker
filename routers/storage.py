@@ -1,18 +1,28 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
+from notion_client import APIResponseError
 
 from constants.storage_status import STATUS_FAILED, STATUS_NEEDS_PERMISSION, STATUS_PROVISIONING
 from core.dependencies import (
+    get_notion_provisioning_service,
     get_sheets_provisioning_service,
     get_sheets_storage,
     get_storage_config_service,
 )
 from core.security import get_current_user
 from models.users import User
-from schemas.storage import NotionConnectRequest, StorageStatusResponse
+from schemas.storage import (
+    NotionConnectRequest,
+    NotionPage,
+    NotionSetupRequest,
+    StorageStatusResponse,
+    StorageSwitchRequest,
+    StorageSwitchResponse,
+)
 from services.google_sheets.google_sheets_storage import GoogleSheetsStorage
 from services.google_sheets.provisioning import SheetsProvisioningService
-from services.notion.notion_storage_service import NoSharedNotionPageError
+from services.notion.notion_storage_service import NoSharedNotionPageError, is_invalid_token_error
+from services.notion.provisioning import NotionProvisioningService
 from services.storage.storage_config_service import (
     InvalidNotionTokenError,
     NotionSetupError,
@@ -34,6 +44,16 @@ async def get_storage_status(
     service: StorageConfigService = Depends(get_storage_config_service),
 ):
     return await service.get_status(current_user.id)
+
+
+@router.put("/storage/default", response_model=StorageSwitchResponse)
+async def switch_default_storage(
+    body: StorageSwitchRequest,
+    current_user: User = Depends(get_current_user),
+    service: StorageConfigService = Depends(get_storage_config_service),
+):
+    # Only to a provider whose storage is ready (else 409 storage_not_ready); nothing is copied.
+    return await service.set_default_provider(current_user, body.provider)
 
 
 @router.put("/storage/notion", response_model=StorageStatusResponse)
@@ -59,6 +79,38 @@ async def connect_notion(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
+
+
+@router.get("/storage/notion/pages", response_model=list[NotionPage])
+async def list_notion_pages(
+    current_user: User = Depends(get_current_user),
+    service: NotionProvisioningService = Depends(get_notion_provisioning_service),
+):
+    # Where setup can create the database; empty means the user shared no page at login.
+    try:
+        return await service.list_pages(current_user.id)
+    except APIResponseError as exc:
+        if is_invalid_token_error(exc):
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"code": "needs_permission", "status": STATUS_NEEDS_PERMISSION},
+            )
+        raise
+
+
+@router.post("/storage/notion/setup", response_model=StorageStatusResponse)
+async def setup_notion_storage(
+    body: NotionSetupRequest,
+    current_user: User = Depends(get_current_user),
+    service: NotionProvisioningService = Depends(get_notion_provisioning_service),
+    config_service: StorageConfigService = Depends(get_storage_config_service),
+):
+    # Creates the expense database once the user confirms (also "Retry" after a failure).
+    result = await service.ensure_database(current_user.id, body.parent_page_id)
+    if result in _PROVISION_ERRORS:
+        status_code, code = _PROVISION_ERRORS[result]
+        return JSONResponse(status_code=status_code, content={"code": code, "status": result})
+    return await config_service.get_status(current_user.id)
 
 
 @router.delete("/storage/notion", status_code=status.HTTP_204_NO_CONTENT)

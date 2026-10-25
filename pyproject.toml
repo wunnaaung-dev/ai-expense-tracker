@@ -15,6 +15,7 @@ dependencies = [
     "google-genai>=2.14.0",
     "itsdangerous>=2.2.0",
     "notion-client>=3.1.0",
+    "openpyxl>=3.1.5",
     "psycopg2-binary>=2.9.12",
     "pydantic-settings>=2.14.2",
     "python-dotenv>=1.1.0",

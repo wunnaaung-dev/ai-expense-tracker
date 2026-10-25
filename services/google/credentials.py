@@ -10,6 +10,7 @@ from services.google.errors import GooglePermissionError
 
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
+REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 # Refresh a little before Google's expiry so in-flight calls don't fail.
 EXPIRY_MARGIN_SECONDS = 60
 
@@ -71,3 +72,13 @@ async def get_google_access_token(
     config.encrypted_credentials = encrypt_credentials(credentials)
     await db.commit()
     return credentials["access_token"]
+
+
+async def revoke_google_token(token: str, http_client: httpx.AsyncClient | None = None) -> None:
+    """Remove the app's Google access (revoking a refresh token also revokes its access tokens)."""
+    if http_client is None:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(REVOKE_URL, data={"token": token})
+    else:
+        response = await http_client.post(REVOKE_URL, data={"token": token})
+    response.raise_for_status()

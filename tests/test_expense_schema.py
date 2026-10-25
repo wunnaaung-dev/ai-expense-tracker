@@ -1,10 +1,8 @@
 from datetime import date
-from typing import List, Optional, Tuple
+from typing import List
 
-from schemas.expense import BatchResult, ExpenseData
-from services.extraction.abstract_text_extraction_strategy import TextExtractionStrategy
+from schemas.expense import BatchResult, EntryFilter, ExpenseData
 from services.storage.abstract_storage_strategy import StorageStrategy
-from services.upload.text_expense_orchestrator import TextExpenseOrchestrator
 
 
 def test_legacy_extractor_payload_gets_defaults():
@@ -15,11 +13,7 @@ def test_legacy_extractor_payload_gets_defaults():
     assert item.type == "expense"
     assert item.payment_channel is None
     assert item.source is None
-
-
-class StubExtractor(TextExtractionStrategy):
-    async def extract_from_text(self, text: str) -> List[ExpenseData]:
-        return [ExpenseData(date="2026-10-19", amount=1, description="x")]
+    assert item.currency is None
 
 
 class RecordingStorage(StorageStrategy):
@@ -30,11 +24,13 @@ class RecordingStorage(StorageStrategy):
         self.saved.extend(items)
         return [BatchResult(filename="", status="success", data=i) for i in items]
 
-    async def get_all(self, page_size: int, start_cursor: Optional[str] = None) -> Tuple[List[ExpenseData], Optional[str]]:
-        return [], None
+    async def get_all(self, filters: EntryFilter) -> List[ExpenseData]:
+        return []
 
 
-async def test_text_orchestrator_tags_source():
-    storage = RecordingStorage()
-    await TextExpenseOrchestrator(extraction=StubExtractor(), storage=storage).process("x 1")
-    assert [i.source for i in storage.saved] == ["text"]
+class FakeDb:
+    def __init__(self):
+        self.commits = 0
+
+    async def commit(self):
+        self.commits += 1

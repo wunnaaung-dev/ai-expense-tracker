@@ -2,17 +2,19 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from constants.storage_providers import GOOGLE_SHEETS_PROVIDER, NOTION_PROVIDER
 from constants.storage_status import STATUS_FAILED, STATUS_NEEDS_PERMISSION
 from core.crypto import decrypt_credentials, encrypt_credentials
-from core.security import create_access_token
-from models.storage import UserStorageConfig
+from models.sessions import UserSession
+from models.storage import ExpensesDedup, UserStorageConfig
 from models.users import User
-from services.google.credentials import has_sheets_scopes, merge_google_credentials
+from services.google.credentials import has_sheets_scopes, merge_google_credentials, revoke_google_token
+from services.auth.client_info import ClientInfo
+from services.auth.session_service import start_session
 from services.google_sheets.provisioning import SheetsProvisioningService
 from services.storage.user_storage import get_notion_config, get_storage_config
 
@@ -33,6 +35,10 @@ GOOGLE_LOGIN_NEEDS_PERMISSION = "needs_permission"
 GOOGLE_LOGIN_NEEDS_REFRESH_TOKEN = "needs_refresh_token"
 GOOGLE_LOGIN_PROVISIONING_FAILED = "provisioning_failed"
 
+CONNECT_OK = "ok"
+# The Google / Notion identity already belongs to another account; accounts are never merged.
+CONNECT_ACCOUNT_IN_USE = "account_in_use"
+
 
 @dataclass
 class GoogleLoginResult:
@@ -46,6 +52,29 @@ class AuthService:
         self.db = db
         self.provisioning = provisioning
 
+    async def delete_account(self, user: User) -> None:
+        """Delete the user and everything the server keeps for them. Their Sheet / Notion data is untouched."""
+        await self._revoke_google_access(user.id)
+        # Explicit deletes (not only the FK cascade) so every database removes the same rows.
+        await self.db.execute(delete(ExpensesDedup).where(ExpensesDedup.user_id == user.id))
+        await self.db.execute(delete(UserSession).where(UserSession.user_id == user.id))
+        await self.db.execute(delete(UserStorageConfig).where(UserStorageConfig.user_id == user.id))
+        await self.db.delete(user)
+        await self.db.commit()
+
+    async def _revoke_google_access(self, user_id: int) -> None:
+        """Best effort: a failed revoke never blocks deleting the account."""
+        config = await get_storage_config(self.db, user_id, GOOGLE_SHEETS_PROVIDER)
+        if config is None or not config.encrypted_credentials:
+            return
+        try:
+            credentials = decrypt_credentials(config.encrypted_credentials)
+            token = credentials.get("refresh_token") or credentials.get("access_token")
+            if token:
+                await revoke_google_token(token)
+        except Exception:
+            logger.warning("Google token revoke failed for user %s", user_id, exc_info=True)
+
     async def get_or_create_google_user(self, user_info: dict) -> User:
         google_sub = user_info.get("sub")
         now = datetime.now(timezone.utc)
@@ -55,6 +84,7 @@ class AuthService:
                 google_sub=google_sub,
                 email=user_info.get("email"),
                 name=user_info.get("name"),
+                avatar_url=user_info.get("picture"),
                 default_storage_provider=GOOGLE_SHEETS_PROVIDER,
                 last_login_at=now,
             )
@@ -67,6 +97,7 @@ class AuthService:
                 user = await self._find_google_user(google_sub)
 
         user.name = user_info.get("name")
+        user.avatar_url = user_info.get("picture")
         user.last_login_at = now
         if user_info.get("email"):
             user.email = user_info["email"]
@@ -80,14 +111,14 @@ class AuthService:
         )
         return result.scalar_one_or_none()
 
-    async def login_with_google(self, token: dict) -> GoogleLoginResult:
+    async def login_with_google(self, token: dict, client: ClientInfo | None = None) -> GoogleLoginResult:
         user_info = token.get("userinfo")
         if not user_info:
             raise GoogleLoginError("Google user info missing")
 
         user = await self.get_or_create_google_user(user_info)
         credentials = await self._upsert_google_credentials(user.id, token)
-        jwt_token = create_access_token(user.id)
+        jwt_token = await start_session(self.db, user.id, client)
 
         if not credentials.get("refresh_token"):
             # The caller re-runs consent; provision on that return trip.
@@ -136,7 +167,7 @@ class AuthService:
         await self.db.commit()
         return credentials
 
-    async def login_with_notion(self, token: dict) -> tuple[User, str]:
+    async def login_with_notion(self, token: dict, client: ClientInfo | None = None) -> tuple[User, str]:
         owner = token.get("owner") or {}
         notion_user = owner.get("user") or {}
         notion_user_id = notion_user.get("id")
@@ -147,7 +178,60 @@ class AuthService:
         await self._upsert_notion_credentials(user.id, token)
         await self.db.commit()
         await self.db.refresh(user)
-        return user, create_access_token(user.id)
+        return user, await start_session(self.db, user.id, client)
+
+    async def connect_google(self, user: User, token: dict) -> str:
+        """Link a Google identity to a signed-in user and set up their spreadsheet. Returns the outcome."""
+        user_info = token.get("userinfo")
+        if not user_info or not user_info.get("sub"):
+            raise GoogleLoginError("Google user info missing")
+
+        google_sub = user_info["sub"]
+        if user.google_sub != google_sub:
+            owner = await self._find_google_user(google_sub)
+            if user.google_sub or owner is not None:
+                return CONNECT_ACCOUNT_IN_USE
+            if not await self._link_identity(user, google_sub=google_sub):
+                return CONNECT_ACCOUNT_IN_USE
+
+        credentials = await self._upsert_google_credentials(user.id, token)
+        if not credentials.get("refresh_token"):
+            return GOOGLE_LOGIN_NEEDS_REFRESH_TOKEN
+        return await self._provision_storage(user.id, credentials)
+
+    async def connect_notion(self, user: User, token: dict) -> str:
+        """Link a Notion identity to a signed-in user. The database is set up afterwards via /storage/notion/setup."""
+        notion_user_id = self._notion_owner_id(token)
+        if user.notion_user_id != notion_user_id:
+            result = await self.db.execute(select(User).where(User.notion_user_id == notion_user_id))
+            if user.notion_user_id or result.scalar_one_or_none() is not None:
+                return CONNECT_ACCOUNT_IN_USE
+            if not await self._link_identity(user, notion_user_id=notion_user_id):
+                return CONNECT_ACCOUNT_IN_USE
+
+        await self._upsert_notion_credentials(user.id, token)
+        await self.db.commit()
+        return CONNECT_OK
+
+    async def _link_identity(self, user: User, **identity: str) -> bool:
+        """Set google_sub / notion_user_id; False when a concurrent request took it first."""
+        try:
+            async with self.db.begin_nested():
+                for column, value in identity.items():
+                    setattr(user, column, value)
+        except IntegrityError:
+            await self.db.refresh(user)
+            return False
+        await self.db.commit()
+        return True
+
+    @staticmethod
+    def _notion_owner_id(token: dict) -> str:
+        owner = token.get("owner") or {}
+        notion_user_id = (owner.get("user") or {}).get("id")
+        if owner.get("type") != "user" or not notion_user_id:
+            raise NotionLoginError("Notion login must be authorized by a user")
+        return notion_user_id
 
     async def _upsert_notion_user(self, notion_user_id: str, notion_user: dict) -> User:
         # Email is only present when the integration has the user-email capability.

@@ -5,7 +5,8 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from core.config import settings
 from core.errors import register_exception_handlers
-from routers import auth, expense, health, storage
+from routers import auth, dashboard, entries, export, expense, health, insights, storage
+from routers import settings as settings_router
 
 app = FastAPI()
 
@@ -21,7 +22,12 @@ app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
 
 app.include_router(health.router)
 app.include_router(expense.router)
+app.include_router(entries.router)
+app.include_router(export.router)
+app.include_router(insights.router)
+app.include_router(dashboard.router)
 app.include_router(storage.router)
+app.include_router(settings_router.router)
 app.include_router(auth.router)
 
 register_exception_handlers(app)

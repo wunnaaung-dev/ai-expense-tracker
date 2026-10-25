@@ -2,16 +2,24 @@ import asyncio
 
 from notion_client import APIResponseError, AsyncClient
 from notion_client.errors import APIErrorCode
-from typing import List, Callable, Dict, Any, Optional, Tuple
+from typing import List, Callable, Dict, Any, Optional
 
 from services.storage.abstract_storage_strategy import StorageStrategy
 from services.storage.errors import StorageWriteError
-from schemas.expense import BatchResult, ExpenseData
+from services.storage.filters import matches
+from constants.currencies import DEFAULT_CURRENCY
+from schemas.expense import BatchResult, Currency, EntryFilter, ExpenseData, ExpenseType
 from services.notion.property_config import (
+    BACKFILL_PROPERTIES,
+    CURRENCY_PROPERTY,
+    TYPE_PROPERTY,
     EXPENSE_DB_SCHEMA,
     build_properties,
     parse_notion_page,
 )
+
+
+NOTION_MAX_PAGE_SIZE = 100
 
 
 class NoSharedNotionPageError(Exception):
@@ -62,6 +70,7 @@ class NotionStorageService(StorageStrategy):
         self.client = AsyncClient(auth=token)
         self.database_id = _format_database_id(database_id)
         self._data_source_id: Optional[str] = None
+        self._property_names: Optional[set[str]] = None
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self._build_properties = property_builder
 
@@ -76,6 +85,49 @@ class NotionStorageService(StorageStrategy):
                 )
             self._data_source_id = str(data_sources[0]["id"])
         return self._data_source_id
+
+    async def _properties(self) -> set[str]:
+        if self._property_names is None:
+            data_source_id = await self._ensure_data_source_id()
+            data_source = await self.client.data_sources.retrieve(data_source_id=data_source_id)
+            self._property_names = set(data_source.get("properties", {}))
+        return self._property_names
+
+    async def _currency_property_exists(self) -> bool:
+        return CURRENCY_PROPERTY in await self._properties()
+
+    async def _type_property_exists(self) -> bool:
+        return TYPE_PROPERTY in await self._properties()
+
+    async def _ensure_properties(self) -> None:
+        """Databases created before Currency/Type existed get them on their next write."""
+        try:
+            missing = [name for name in BACKFILL_PROPERTIES if name not in await self._properties()]
+            if not missing:
+                return
+            await self.client.data_sources.update(
+                data_source_id=await self._ensure_data_source_id(),
+                properties={name: EXPENSE_DB_SCHEMA[name] for name in missing},
+            )
+        except APIResponseError as exc:
+            raise StorageWriteError(f"Could not add the {'/'.join(BACKFILL_PROPERTIES)} properties: {exc}") from exc
+        self._property_names.update(missing)
+
+    @staticmethod
+    def _currency_filter(currency: Currency) -> Dict[str, Any]:
+        equals = {"property": CURRENCY_PROPERTY, "select": {"equals": currency}}
+        if currency != DEFAULT_CURRENCY:
+            return equals
+        # Pages without a currency count as THB.
+        return {"or": [equals, {"property": CURRENCY_PROPERTY, "select": {"is_empty": True}}]}
+
+    @staticmethod
+    def _type_filter(entry_type: ExpenseType) -> Dict[str, Any]:
+        equals = {"property": TYPE_PROPERTY, "select": {"equals": entry_type}}
+        if entry_type != "expense":
+            return equals
+        # Pages without a type are expenses.
+        return {"or": [equals, {"property": TYPE_PROPERTY, "select": {"is_empty": True}}]}
 
     async def verify_access(self) -> None:
         await self._ensure_data_source_id()
@@ -92,6 +144,7 @@ class NotionStorageService(StorageStrategy):
                 return BatchResult(filename="", status="failed", data=item, error=str(e))
 
     async def insert_many(self, items: List[ExpenseData]) -> List[BatchResult]:
+        await self._ensure_properties()
         tasks = [self._insert_one(item) for item in items]
         results = await asyncio.gather(*tasks)
         # Partial failures stay per-item; a write where nothing landed is a storage failure.
@@ -99,20 +152,58 @@ class NotionStorageService(StorageStrategy):
             raise StorageWriteError(results[0].error or "Notion write failed")
         return results
 
-    async def get_all(self, page_size: int, start_cursor: Optional[str] = None) -> Tuple[List[ExpenseData], Optional[str]]:
+    async def record_url(self, record: ExpenseData) -> Optional[str]:
+        # Pages are created without returning their URL; the database is the useful link.
+        return f"https://www.notion.so/{self.database_id.replace('-', '')}"
+
+    async def get_all(self, filters: EntryFilter) -> List[ExpenseData]:
         async with self.semaphore:
             data_source_id = await self._ensure_data_source_id()
 
-            body: Dict[str, Any] = {"page_size": page_size}
-            if start_cursor:
-                body["start_cursor"] = start_cursor
+            # Narrow what Notion sends back; `matches` below still decides (search, case-insensitive category).
+            conditions: List[Dict[str, Any]] = []
+            if filters.currency:
+                if not await self._currency_property_exists():
+                    # No Currency property yet: every page is THB.
+                    if filters.currency != DEFAULT_CURRENCY:
+                        return []
+                else:
+                    conditions.append(self._currency_filter(filters.currency))
+            if filters.entry_type:
+                if not await self._type_property_exists():
+                    # No Type property yet: every page is an expense.
+                    if filters.entry_type != "expense":
+                        return []
+                else:
+                    conditions.append(self._type_filter(filters.entry_type))
+            if filters.date_from:
+                conditions.append({"property": "Date", "date": {"on_or_after": filters.date_from.isoformat()}})
+            if filters.date_to:
+                conditions.append({"property": "Date", "date": {"on_or_before": filters.date_to.isoformat()}})
 
-            response = await self.client.data_sources.query(
-                data_source_id=data_source_id,
-                **body,
-            )
+            body: Dict[str, Any] = {
+                "page_size": NOTION_MAX_PAGE_SIZE,
+                "sorts": [{"property": "Date", "direction": "descending"}],
+            }
+            if len(conditions) == 1:
+                body["filter"] = conditions[0]
+            elif conditions:
+                body["filter"] = {"and": conditions}
 
-            expenses = [parse_notion_page(page) for page in response.get("results", [])]
-            next_cursor = response.get("next_cursor")
+            # Totals need every match, so follow the cursor to the end.
+            records: List[ExpenseData] = []
+            cursor: Optional[str] = None
+            while True:
+                response = await self.client.data_sources.query(
+                    data_source_id=data_source_id,
+                    **body,
+                    **({"start_cursor": cursor} if cursor else {}),
+                )
+                records.extend(parse_notion_page(page) for page in response.get("results", []))
+                cursor = response.get("next_cursor")
+                if not cursor:
+                    break
 
-            return expenses, next_cursor
+            records = [record for record in records if matches(record, filters)]
+            records.sort(key=lambda record: record.date, reverse=True)
+            return records

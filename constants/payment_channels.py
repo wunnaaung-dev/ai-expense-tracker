@@ -1,0 +1,3 @@
+PAYMENT_CHANNELS = ("Cash", "Bank")
+
+DEFAULT_PAYMENT_CHANNEL = "Cash"

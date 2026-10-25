@@ -1,8 +1,7 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
-from sqlalchemy import or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from constants.storage_providers import GOOGLE_SHEETS_PROVIDER
@@ -18,7 +17,12 @@ from core.crypto import decrypt_credentials
 from models.storage import UserStorageConfig
 from schemas.storage import StorageStatusResponse
 from services.google.credentials import has_sheets_scopes
-from services.google.errors import GoogleApiError, GooglePermissionError
+from services.google.errors import (
+    SERVICE_DISABLED,
+    SERVICE_DISABLED_HINT,
+    GoogleApiError,
+    GooglePermissionError,
+)
 from services.google.google_api import GoogleApi
 from services.google_sheets.schema import (
     APP_PROPERTY_KEY,
@@ -26,12 +30,14 @@ from services.google_sheets.schema import (
     build_setup_requests,
     build_spreadsheet_body,
 )
-from services.storage.user_storage import get_storage_config, set_storage_status
+from services.storage.user_storage import (
+    claim_provisioning,
+    get_storage_config,
+    reset_and_set_status,
+    set_storage_status,
+)
 
 logger = logging.getLogger(__name__)
-
-# A crashed request can't hold the claim forever: after this, another request may take over.
-PROVISIONING_LEASE = timedelta(minutes=2)
 
 ApiFactory = Callable[[UserStorageConfig], Awaitable[GoogleApi]]
 
@@ -62,8 +68,14 @@ class SheetsProvisioningService:
 
         try:
             return await self._ensure(config)
-        except GooglePermissionError:
+        except GooglePermissionError as exc:
+            logger.warning("Spreadsheet provisioning for user %s needs permission: %s", user_id, exc)
             await self._reset_and_set(config, STATUS_NEEDS_PERMISSION)
+        except GoogleApiError as exc:
+            # Google's message already says what's wrong; a traceback adds nothing.
+            hint = SERVICE_DISABLED_HINT if exc.error_reason == SERVICE_DISABLED else ""
+            logger.error("Spreadsheet provisioning failed for user %s: %s%s", user_id, exc, hint)
+            await self._reset_and_set(config, STATUS_FAILED)
         except Exception:
             logger.exception("Spreadsheet provisioning failed for user %s", user_id)
             await self._reset_and_set(config, STATUS_FAILED)
@@ -102,26 +114,7 @@ class SheetsProvisioningService:
         return True
 
     async def _claim(self, config: UserStorageConfig) -> bool:
-        """Atomically move to `provisioning` unless a live claim exists (compare-and-set)."""
-        now = datetime.now(timezone.utc)
-        result = await self.db.execute(
-            update(UserStorageConfig)
-            .where(
-                UserStorageConfig.id == config.id,
-                or_(
-                    UserStorageConfig.storage_status != STATUS_PROVISIONING,
-                    UserStorageConfig.status_changed_at.is_(None),
-                    UserStorageConfig.status_changed_at < now - PROVISIONING_LEASE,
-                ),
-            )
-            .values(storage_status=STATUS_PROVISIONING, status_changed_at=now)
-            .returning(UserStorageConfig.id)
-            .execution_options(synchronize_session=False)
-        )
-        claimed = result.scalar_one_or_none() is not None
-        await self.db.commit()
-        await self.db.refresh(config)
-        return claimed
+        return await claim_provisioning(self.db, config)
 
     @staticmethod
     async def _is_usable(api: GoogleApi, spreadsheet_id: str) -> bool:
@@ -150,11 +143,4 @@ class SheetsProvisioningService:
         return spreadsheet_id
 
     async def _reset_and_set(self, config: UserStorageConfig, status: str) -> None:
-        try:
-            await set_storage_status(self.db, config, status)
-        except Exception:
-            # Only a DB error leaves the session unusable; roll back just then,
-            # since rollback expires every loaded object (including the user).
-            await self.db.rollback()
-            await self.db.refresh(config)
-            await set_storage_status(self.db, config, status)
+        await reset_and_set_status(self.db, config, status)

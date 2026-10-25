@@ -79,7 +79,7 @@ class StubAuthService:
     def __init__(self, outcomes):
         self.outcomes = list(outcomes)
 
-    async def login_with_google(self, token):
+    async def login_with_google(self, token, client=None):
         return GoogleLoginResult(user=None, access_token="jwt-value", outcome=self.outcomes.pop(0))
 
 

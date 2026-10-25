@@ -1,4 +1,5 @@
 from fastapi import Depends
+from notion_client import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from constants.storage_providers import GOOGLE_SHEETS_PROVIDER, NOTION_PROVIDER
@@ -10,6 +11,8 @@ from models.storage import UserStorageConfig
 from models.users import User
 from services.auth.auth_service import AuthService
 from services.dedup.hash_checker import DuplicateChecker
+from services.entries.entry_defaults import EntryDefaults
+from services.entries.entry_service import EntryService
 from services.extraction.abstract_audio_extraction_strategy import AudioExtractionStrategy
 from services.extraction.abstract_image_extraction_strategy import ImageExtractionStrategy
 from services.extraction.abstract_text_extraction_strategy import TextExtractionStrategy
@@ -19,14 +22,15 @@ from services.google.errors import GooglePermissionError
 from services.google.google_api import GoogleApi
 from services.google_sheets.google_sheets_storage import GoogleSheetsStorage
 from services.google_sheets.provisioning import SheetsProvisioningService
+from services.insights.insights_service import InsightsService
 from services.notion.notion_storage_service import NotionStorageService
+from services.notion.provisioning import NotionProvisioningService
+from services.settings.settings_service import SettingsService
+from services.storage import record_cache
 from services.storage.abstract_storage_strategy import StorageStrategy
 from services.storage.errors import StorageNotReadyError
 from services.storage.storage_config_service import StorageConfigService
 from services.storage.user_storage import get_storage_config, set_storage_status
-from services.upload.expense_upload_orchestrator import ExpenseUploadOrchestrator
-from services.upload.text_expense_orchestrator import TextExpenseOrchestrator
-from services.upload.voice_expense_orchestrator import VoiceExpenseOrchestrator
 
 
 def get_sheets_provisioning_service(
@@ -77,6 +81,12 @@ def get_auth_service(
     return AuthService(db, provisioning)
 
 
+def get_notion_provisioning_service(
+    db: AsyncSession = Depends(get_db),
+) -> NotionProvisioningService:
+    return NotionProvisioningService(db, lambda token: AsyncClient(auth=token))
+
+
 def get_storage_config_service(
     db: AsyncSession = Depends(get_db),
 ) -> StorageConfigService:
@@ -102,11 +112,33 @@ async def get_storage_service(
     raise StorageNotReadyError(STATUS_NONE)
 
 
+async def get_insights_service(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    storage: StorageStrategy = Depends(get_storage_service),
+) -> InsightsService:
+    # get_storage_service has checked the config is ready; its target tags the cached records.
+    provider = current_user.default_storage_provider
+    config = await get_storage_config(db, current_user.id, provider)
+    return InsightsService(storage, current_user, (provider, config.target_id))
+
+
 def get_duplicate_checker(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DuplicateChecker:
     return DuplicateChecker(db, current_user.id)
+
+def get_entry_defaults(
+    current_user: User = Depends(get_current_user),
+) -> EntryDefaults:
+    return EntryDefaults(current_user)
+
+def get_settings_service(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SettingsService:
+    return SettingsService(db, current_user)
 
 def get_image_extraction_service() -> ImageExtractionStrategy:
     return GeminiExtractor()
@@ -117,21 +149,19 @@ def get_text_extraction_service() -> TextExtractionStrategy:
 def get_audio_extraction_service() -> AudioExtractionStrategy:
     return GeminiExtractor()
 
-def get_expense_upload_orchestrator(
+def get_entry_service(
     image_extraction: ImageExtractionStrategy = Depends(get_image_extraction_service),
-    storage: StorageStrategy = Depends(get_storage_service),
-    dedup: DuplicateChecker = Depends(get_duplicate_checker),
-) -> ExpenseUploadOrchestrator:
-    return ExpenseUploadOrchestrator(image_extraction=image_extraction, storage=storage, dedup=dedup)
-
-def get_text_expense_orchestrator(
     text_extraction: TextExtractionStrategy = Depends(get_text_extraction_service),
-    storage: StorageStrategy = Depends(get_storage_service),
-) -> TextExpenseOrchestrator:
-    return TextExpenseOrchestrator(extraction=text_extraction, storage=storage)
-
-def get_voice_expense_orchestrator(
-    extraction: AudioExtractionStrategy = Depends(get_audio_extraction_service),
-    storage: StorageStrategy = Depends(get_storage_service),
-) -> VoiceExpenseOrchestrator:
-    return VoiceExpenseOrchestrator(extraction=extraction, storage=storage)
+    audio_extraction: AudioExtractionStrategy = Depends(get_audio_extraction_service),
+    dedup: DuplicateChecker = Depends(get_duplicate_checker),
+    defaults: EntryDefaults = Depends(get_entry_defaults),
+    current_user: User = Depends(get_current_user),
+) -> EntryService:
+    return EntryService(
+        image_extraction=image_extraction,
+        text_extraction=text_extraction,
+        audio_extraction=audio_extraction,
+        dedup=dedup,
+        defaults=defaults,
+        on_saved=lambda: record_cache.invalidate(current_user.id),
+    )

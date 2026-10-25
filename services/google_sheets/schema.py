@@ -1,5 +1,8 @@
 from dataclasses import dataclass
 
+from constants.currencies import CURRENCIES
+from constants.payment_channels import PAYMENT_CHANNELS
+
 SPREADSHEET_TITLE = "AI Expense Tracker"
 TAB_TITLE = "Transactions"
 
@@ -16,7 +19,8 @@ META_SCHEMA_KEY = "et_schema_version"
 SCHEMA_VERSION = "1"
 
 TYPE_VALUES = ("expense", "income")
-SOURCE_VALUES = ("text", "slip", "voice")
+SOURCE_VALUES = ("text", "slip", "voice", "manual")
+CURRENCY_VALUES = CURRENCIES
 
 
 @dataclass(frozen=True)
@@ -33,11 +37,24 @@ FIELDS = (
     SheetField("category", "Category", required=False),
     SheetField("description", "Description", required=False),
     SheetField("amount", "Amount", required=True),
+    SheetField("currency", "Currency", required=False),
+    # Derived: the amount again, only in the column of its currency, so users can SUM per currency.
+    SheetField("amount_thb", "Amount (THB)", required=False),
+    SheetField("amount_mmk", "Amount (MMK)", required=False),
+    SheetField("amount_usd", "Amount (USD)", required=False),
     SheetField("payment_channel", "Payment Channel", required=False),
     SheetField("source", "Source", required=False),
 )
 FIELD_BY_NAME = {field.name: field for field in FIELDS}
 REQUIRED_FIELDS = tuple(field.name for field in FIELDS if field.required)
+# Optional fields added to older sheets on the next write or repair. Their
+# absence is never schema_broken: readers fall back to a default.
+BACKFILL_FIELDS = ("currency", "amount_thb", "amount_mmk", "amount_usd")
+# Per-currency amount column -> its currency.
+CURRENCY_AMOUNT_FIELDS = {"amount_thb": "THB", "amount_mmk": "MMK", "amount_usd": "USD"}
+# Optional columns whose dropdown changed since older sheets were set up; the
+# backfill re-applies their validation when it adds the missing columns.
+REVALIDATED_FIELDS = ("payment_channel", "source")
 
 
 def _metadata(key: str, value: str, location: dict) -> dict:
@@ -92,24 +109,36 @@ def header_cell(field: SheetField) -> dict:
     return {"userEnteredValue": {"stringValue": field.header}}
 
 
-def column_requests(sheet_id: int, field: SheetField, index: int) -> list[dict]:
-    """Metadata, validation and format for one of our columns at `index`."""
-    requests = [
-        _metadata(
-            META_FIELD_KEY,
-            field.name,
-            {"dimensionRange": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": index, "endIndex": index + 1}},
-        )
-    ]
+def validation_requests(sheet_id: int, field: SheetField, index: int) -> list[dict]:
+    """Dropdown and number format for one of our columns at `index` (no metadata)."""
+    requests = []
     if field.name == "type":
         requests.append(_one_of(sheet_id, index, TYPE_VALUES))
     elif field.name == "source":
         requests.append(_one_of(sheet_id, index, SOURCE_VALUES))
-    elif field.name == "amount":
+    elif field.name == "currency":
+        requests.append(_one_of(sheet_id, index, CURRENCY_VALUES))
+    elif field.name == "payment_channel":
+        requests.append(_one_of(sheet_id, index, PAYMENT_CHANNELS))
+    elif field.name in ("amount", "amount_thb", "amount_usd"):
         requests.append(_number_format(sheet_id, index, "NUMBER", "#,##0.00"))
+    elif field.name == "amount_mmk":
+        requests.append(_number_format(sheet_id, index, "NUMBER", "#,##0"))
     elif field.name == "date":
         requests.append(_number_format(sheet_id, index, "DATE", "yyyy-mm-dd"))
     return requests
+
+
+def column_requests(sheet_id: int, field: SheetField, index: int) -> list[dict]:
+    """Metadata, validation and format for one of our columns at `index`."""
+    return [
+        _metadata(
+            META_FIELD_KEY,
+            field.name,
+            {"dimensionRange": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": index, "endIndex": index + 1}},
+        ),
+        *validation_requests(sheet_id, field, index),
+    ]
 
 
 def build_spreadsheet_body() -> dict:
