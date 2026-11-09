@@ -2,7 +2,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Awaitable, Callable, List, Optional
+from typing import Any, Awaitable, Callable, List, NoReturn, Optional
 
 from cachetools import TTLCache
 
@@ -117,6 +117,11 @@ def _parse_amount(value: Any) -> float:
     return float(str(value).replace(",", "").strip())
 
 
+def _one_of(value: Any, allowed: tuple, default: Any) -> Any:
+    """`value` when it's one of `allowed`, else the reader's default."""
+    return value if value in allowed else default
+
+
 def _parse_row(row: list, columns: dict[str, int]) -> ExpenseData | None:
     def get(name: str) -> Any:
         index = columns.get(name)
@@ -145,11 +150,11 @@ def _parse_row(row: list, columns: dict[str, int]) -> ExpenseData | None:
         description=str(get("description") or ""),
         category=str(get("category") or "General"),
         id=str(record_id) if record_id is not None else None,
-        type=record_type if record_type in TYPE_VALUES else "expense",
+        type=_one_of(record_type, TYPE_VALUES, "expense"),
         payment_channel=str(payment_channel) if payment_channel is not None else None,
-        source=source if source in SOURCE_VALUES else None,
+        source=_one_of(source, SOURCE_VALUES, None),
         # Rows from before currencies existed (or a blank cell) are THB.
-        currency=currency if currency in CURRENCIES else DEFAULT_CURRENCY,
+        currency=_one_of(currency, CURRENCIES, DEFAULT_CURRENCY),
     )
 
 
@@ -191,6 +196,9 @@ class GoogleSheetsStorage(StorageStrategy):
     users may rename headers, reorder or add columns, sort rows and rename the tab.
     Records are addressed by the UUID in the `id` column, never by row number.
     """
+
+    # What PATCH may change: every schema field except the record's id.
+    UPDATABLE_FIELDS = frozenset(FIELD_BY_NAME) - {"id"}
 
     def __init__(
         self,
@@ -294,9 +302,9 @@ class GoogleSheetsStorage(StorageStrategy):
     # --- update / delete (not on the ABC yet) -------------------------------------
 
     async def update(self, record_id: str, changes: dict[str, Any]) -> None:
-        unknown = set(changes) - set(FIELD_BY_NAME)
-        if unknown or "id" in changes:
-            raise ValueError(f"Cannot update fields: {sorted(unknown | ({'id'} & set(changes)))}")
+        invalid = sorted(set(changes) - self.UPDATABLE_FIELDS)
+        if invalid:
+            raise ValueError(f"Cannot update fields: {invalid}")
 
         column_map = await self.resolve_columns(fresh=True)
         row_index = await self._locate(record_id, column_map)
@@ -476,12 +484,12 @@ class GoogleSheetsStorage(StorageStrategy):
             # Usually a grid/range that no longer exists: the cached mapping is stale.
             self.invalidate_columns()
 
-    async def _missing(self) -> None:
+    async def _missing(self) -> NoReturn:
         self.invalidate_columns()
         await self._on_status(STATUS_MISSING)
         raise SpreadsheetMissingError(self.spreadsheet_id)
 
-    async def _schema_broken(self, missing: list[str]) -> None:
+    async def _schema_broken(self, missing: list[str]) -> NoReturn:
         self.invalidate_columns()
         await self._on_status(STATUS_SCHEMA_BROKEN)
         raise SheetSchemaBrokenError(missing)
