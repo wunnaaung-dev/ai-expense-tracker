@@ -61,6 +61,34 @@ class ColumnMap:
     sheet_id: int
     columns: dict[str, int]  # field name -> 0-based column index
 
+    @property
+    def width(self) -> int:
+        """Highest mapped column index + 1: how wide a written row must be."""
+        return max(self.columns.values()) + 1
+
+    @property
+    def id_index(self) -> int:
+        return self.columns["id"]
+
+    def missing(self, names) -> list[str]:
+        """Which of `names` this sheet doesn't have a column for."""
+        return [name for name in names if name not in self.columns]
+
+
+# Row 0 is the header; records start at row 1.
+DATA_START = 1
+
+
+def grid_range(sheet_id: int, rows: tuple[int, int | None], cols: tuple[int, int] | None = None) -> dict:
+    """A Sheets gridRange. Bounds you don't pass are left out of the dict."""
+    grid: dict[str, Any] = {"sheetId": sheet_id, "startRowIndex": rows[0]}
+    if rows[1] is not None:
+        grid["endRowIndex"] = rows[1]
+    if cols is not None:
+        grid["startColumnIndex"] = cols[0]
+        grid["endColumnIndex"] = cols[1]
+    return grid
+
 
 # Per-process, ephemeral. Reads use it; writes always re-resolve so a column the
 # user just moved can never receive another field's value.
@@ -221,12 +249,11 @@ class GoogleSheetsStorage(StorageStrategy):
     def invalidate_columns(self) -> None:
         _column_cache.pop(self._cache_key, None)
 
-    async def resolve_columns(self, fresh: bool = False) -> ColumnMap:
-        if not fresh:
-            cached = _column_cache.get(self._cache_key)
-            if cached is not None:
-                return cached
+    async def _fetch_layout(self) -> tuple[list[int], list[dict]]:
+        """Drive check + Developer Metadata for the transaction tab(s).
 
+        Shared by resolve_columns and repair so both read the sheet the same way.
+        """
         # The Sheets API still serves trashed files, so check Drive before trusting it.
         file = await self._call(self.api.get_file(self.spreadsheet_id))
         if file.get("trashed"):
@@ -235,20 +262,26 @@ class GoogleSheetsStorage(StorageStrategy):
         metadata = await self._call(
             self.api.search_developer_metadata(self.spreadsheet_id, [META_SHEET_KEY, META_FIELD_KEY])
         )
-        sheet_ids = _sheet_ids(metadata)
+        return _sheet_ids(metadata), metadata
+
+    async def resolve_columns(self, fresh: bool = False) -> ColumnMap:
+        if not fresh:
+            cached = _column_cache.get(self._cache_key)
+            if cached is not None:
+                return cached
+
+        sheet_ids, metadata = await self._fetch_layout()
         if not sheet_ids:
             await self._schema_broken(list(REQUIRED_FIELDS))
         if len(sheet_ids) > 1:
             # A duplicated tab copies its metadata; the original has the lowest sheetId.
             logger.warning("Spreadsheet %s has %d transaction tabs; using the original", self.spreadsheet_id, len(sheet_ids))
 
-        sheet_id = sheet_ids[0]
-        columns = _columns_on(metadata, sheet_id)
-        missing = [name for name in REQUIRED_FIELDS if name not in columns]
+        column_map = ColumnMap(sheet_id=sheet_ids[0], columns=_columns_on(metadata, sheet_ids[0]))
+        missing = column_map.missing(REQUIRED_FIELDS)
         if missing:
             await self._schema_broken(missing)
 
-        column_map = ColumnMap(sheet_id=sheet_id, columns=columns)
         _column_cache[self._cache_key] = column_map
         await self._on_status(STATUS_READY)
         return column_map
@@ -257,9 +290,9 @@ class GoogleSheetsStorage(StorageStrategy):
 
     async def insert_many(self, items: List[ExpenseData]) -> List[BatchResult]:
         column_map = await self.resolve_columns(fresh=True)
-        if any(name not in column_map.columns for name in BACKFILL_FIELDS):
+        if column_map.missing(BACKFILL_FIELDS):
             column_map = await self._backfill_columns(column_map)
-        width = max(column_map.columns.values()) + 1
+        width = column_map.width
         records = [item.model_copy(update={"id": item.id or str(uuid.uuid4())}) for item in items]
 
         rows = []
@@ -279,7 +312,7 @@ class GoogleSheetsStorage(StorageStrategy):
         column_map = await self.resolve_columns()
         values = await self._call(self.api.get_grid_values(
             self.spreadsheet_id,
-            {"sheetId": column_map.sheet_id, "startRowIndex": 1},
+            grid_range(column_map.sheet_id, rows=(DATA_START, None)),
         ))
         records = [
             record for row in values
@@ -319,14 +352,7 @@ class GoogleSheetsStorage(StorageStrategy):
 
     async def delete(self, record_id: str) -> None:
         column_map = await self.resolve_columns(fresh=True)
-        id_index = column_map.columns["id"]
-        row_index = await self._locate(record_id, column_map)
-
-        # Rows can move between locating and deleting (sorts, inserts): re-check once.
-        if await self._id_at(column_map.sheet_id, row_index, id_index) != record_id:
-            row_index = await self._locate(record_id, column_map)
-            if await self._id_at(column_map.sheet_id, row_index, id_index) != record_id:
-                raise RecordNotFoundError(record_id)
+        row_index = await self._locate_verified(record_id, column_map)
 
         await self._write(self.api.batch_update(
             self.spreadsheet_id,
@@ -347,14 +373,7 @@ class GoogleSheetsStorage(StorageStrategy):
     async def repair(self) -> ColumnMap:
         """Re-add missing required/backfill columns (or the whole tab) at the end, then resolve again."""
         self.invalidate_columns()
-        file = await self._call(self.api.get_file(self.spreadsheet_id))
-        if file.get("trashed"):
-            await self._missing()
-
-        metadata = await self._call(
-            self.api.search_developer_metadata(self.spreadsheet_id, [META_SHEET_KEY, META_FIELD_KEY])
-        )
-        sheet_ids = _sheet_ids(metadata)
+        sheet_ids, metadata = await self._fetch_layout()
         properties = await self._call(self.api.get_sheet_properties(self.spreadsheet_id))
 
         if not sheet_ids:
@@ -429,24 +448,29 @@ class GoogleSheetsStorage(StorageStrategy):
 
     @staticmethod
     def _cell_range(sheet_id: int, row_index: int, column_index: int) -> dict:
-        return {
-            "sheetId": sheet_id,
-            "startRowIndex": row_index,
-            "endRowIndex": row_index + 1,
-            "startColumnIndex": column_index,
-            "endColumnIndex": column_index + 1,
-        }
+        return grid_range(sheet_id, rows=(row_index, row_index + 1), cols=(column_index, column_index + 1))
 
     async def _locate(self, record_id: str, column_map: ColumnMap) -> int:
         """0-based row index of the record, read from the ID column only."""
-        id_index = column_map.columns["id"]
+        id_index = column_map.id_index
         values = await self._call(self.api.get_grid_values(
             self.spreadsheet_id,
-            {"sheetId": column_map.sheet_id, "startRowIndex": 1, "startColumnIndex": id_index, "endColumnIndex": id_index + 1},
+            grid_range(column_map.sheet_id, rows=(DATA_START, None), cols=(id_index, id_index + 1)),
         ))
         for offset, row in enumerate(values):
             if row and str(row[0]) == record_id:
                 return offset + 1
+        raise RecordNotFoundError(record_id)
+
+    async def _locate_verified(self, record_id: str, column_map: ColumnMap) -> int:
+        """Row index confirmed to still hold the record, or RecordNotFoundError.
+
+        Rows can move between locating and deleting (sorts, inserts): re-check once.
+        """
+        for _ in range(2):
+            row_index = await self._locate(record_id, column_map)
+            if await self._id_at(column_map.sheet_id, row_index, column_map.id_index) == record_id:
+                return row_index
         raise RecordNotFoundError(record_id)
 
     async def _id_at(self, sheet_id: int, row_index: int, id_index: int) -> str | None:
