@@ -67,6 +67,11 @@ class ColumnMap:
 _column_cache: TTLCache = TTLCache(maxsize=1024, ttl=300)
 
 
+def clear_column_cache() -> None:
+    """Drop every cached column mapping (tests start from a clean slate)."""
+    _column_cache.clear()
+
+
 async def _noop_status(status: str) -> None:
     return None
 

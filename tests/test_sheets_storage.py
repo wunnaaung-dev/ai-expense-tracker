@@ -29,9 +29,9 @@ from tests.test_provisioning import FakeUser, StubProvisioning
 
 @pytest.fixture(autouse=True)
 def clear_column_cache():
-    google_sheets_storage._column_cache.clear()
+    google_sheets_storage.clear_column_cache()
     yield
-    google_sheets_storage._column_cache.clear()
+    google_sheets_storage.clear_column_cache()
 
 
 class StatusLog:
@@ -146,6 +146,22 @@ async def test_update_rejects_id_and_unknown_fields(storage):
         await storage.update(record_id, {"colour": "red"})
 
 
+async def test_update_names_the_offending_fields_in_the_message(storage):
+    (record_id,) = await insert(storage, expense("lunch"))
+
+    with pytest.raises(ValueError) as error:
+        await storage.update(record_id, {"colour": "red"})
+    assert str(error.value) == "Cannot update fields: ['colour']"
+
+    with pytest.raises(ValueError) as error:
+        await storage.update(record_id, {"id": "other"})
+    assert str(error.value) == "Cannot update fields: ['id']"
+
+    with pytest.raises(ValueError) as error:
+        await storage.update(record_id, {"amount": 1, "colour": "red", "id": "other"})
+    assert str(error.value) == "Cannot update fields: ['colour', 'id']"
+
+
 # --- user edits ------------------------------------------------------------------
 
 async def test_header_renamed(storage, fake):
@@ -226,6 +242,40 @@ async def test_delete_rechecks_row_when_rows_move(storage, fake):
     fake.get_grid_values = sort_after_locate
     await storage.delete(a)
 
+    assert [r["Description"] for r in fake.values_by_header()] == ["b"]
+
+
+async def test_delete_rechecks_with_an_exact_locate_id_at_sequence(storage, fake):
+    """locate → id_at → locate → id_at: one re-check when the row moved, then delete."""
+    (a, _) = await insert(storage, expense("a"), expense("b"))
+    original = fake.get_grid_values
+    reads = {"n": 0}
+
+    async def sort_after_locate(spreadsheet_id, grid_range):
+        values = await original(spreadsheet_id, grid_range)
+        reads["n"] += 1
+        if reads["n"] == 1:  # the user sorts between our locate and the re-check
+            fake.sort_rows("Description", reverse=True)
+        return values
+
+    fake.get_grid_values = sort_after_locate
+
+    sequence = []
+    locate, id_at = storage._locate, storage._id_at
+
+    async def spy_locate(record_id, column_map):
+        sequence.append("locate")
+        return await locate(record_id, column_map)
+
+    async def spy_id_at(sheet_id, row_index, id_index):
+        sequence.append("id_at")
+        return await id_at(sheet_id, row_index, id_index)
+
+    storage._locate, storage._id_at = spy_locate, spy_id_at
+
+    await storage.delete(a)
+
+    assert sequence == ["locate", "id_at", "locate", "id_at"]
     assert [r["Description"] for r in fake.values_by_header()] == ["b"]
 
 
