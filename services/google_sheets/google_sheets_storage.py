@@ -1,12 +1,9 @@
 import logging
 import uuid
-from dataclasses import dataclass
-from datetime import date, timedelta
 from typing import Any, Awaitable, Callable, List, NoReturn, Optional
 
 from cachetools import TTLCache
 
-from constants.currencies import CURRENCIES, DEFAULT_CURRENCY
 from constants.storage_status import (
     STATUS_MISSING,
     STATUS_NEEDS_PERMISSION,
@@ -22,72 +19,43 @@ from services.google.errors import (
 )
 from services.google.google_api import GoogleApi
 from services.storage.filters import matches
+# The codec's _parse_date/_parse_amount/SHEETS_EPOCH are re-exported here so
+# older `from ...google_sheets_storage import ...` keep working.
+from services.google_sheets.codec import (
+    SHEETS_EPOCH,
+    _field_value,
+    _parse_amount,
+    _parse_date,
+    _to_cell,
+    _to_raw,
+    parse_row as _parse_row,
+)
 from services.google_sheets.errors import (
     RecordNotFoundError,
     SheetSchemaBrokenError,
     SpreadsheetMissingError,
 )
+from services.google_sheets.layout import (
+    DATA_START,
+    ColumnMap,
+    columns_on as _columns_on,
+    grid_range,
+    sheet_ids as _sheet_ids,
+)
+from services.google_sheets.repair_requests import missing_column_requests, new_tab_requests
 from services.google_sheets.schema import (
     BACKFILL_FIELDS,
-    CURRENCY_AMOUNT_FIELDS,
     FIELD_BY_NAME,
-    FIELDS,
     META_FIELD_KEY,
     META_SHEET_KEY,
-    META_SHEET_VALUE,
     REQUIRED_FIELDS,
-    REVALIDATED_FIELDS,
-    SOURCE_VALUES,
-    TAB_TITLE,
-    TYPE_VALUES,
-    build_tab_requests,
-    column_requests,
-    header_cell,
-    validation_requests,
 )
 from services.storage.abstract_storage_strategy import StorageStrategy
 from services.storage.errors import StorageWriteError
 
 logger = logging.getLogger(__name__)
 
-# Google Sheets counts dates as days since 1899-12-30.
-SHEETS_EPOCH = date(1899, 12, 30)
-
 StatusCallback = Callable[[str], Awaitable[None]]
-
-
-@dataclass(frozen=True)
-class ColumnMap:
-    sheet_id: int
-    columns: dict[str, int]  # field name -> 0-based column index
-
-    @property
-    def width(self) -> int:
-        """Highest mapped column index + 1: how wide a written row must be."""
-        return max(self.columns.values()) + 1
-
-    @property
-    def id_index(self) -> int:
-        return self.columns["id"]
-
-    def missing(self, names) -> list[str]:
-        """Which of `names` this sheet doesn't have a column for."""
-        return [name for name in names if name not in self.columns]
-
-
-# Row 0 is the header; records start at row 1.
-DATA_START = 1
-
-
-def grid_range(sheet_id: int, rows: tuple[int, int | None], cols: tuple[int, int] | None = None) -> dict:
-    """A Sheets gridRange. Bounds you don't pass are left out of the dict."""
-    grid: dict[str, Any] = {"sheetId": sheet_id, "startRowIndex": rows[0]}
-    if rows[1] is not None:
-        grid["endRowIndex"] = rows[1]
-    if cols is not None:
-        grid["startColumnIndex"] = cols[0]
-        grid["endColumnIndex"] = cols[1]
-    return grid
 
 
 # Per-process, ephemeral. Reads use it; writes always re-resolve so a column the
@@ -102,119 +70,6 @@ def clear_column_cache() -> None:
 
 async def _noop_status(status: str) -> None:
     return None
-
-
-def _to_raw(field: str, value: Any) -> Any:
-    """Python value -> raw cell value (dates as serial numbers)."""
-    if value is None:
-        return ""
-    if field == "date":
-        if isinstance(value, str):
-            value = date.fromisoformat(value)
-        return (value - SHEETS_EPOCH).days
-    if field == "amount" or field in CURRENCY_AMOUNT_FIELDS:
-        return float(value)
-    return str(value)
-
-
-def _field_value(record: ExpenseData, field: str) -> Any:
-    """The value written to a column; per-currency amounts are blank unless the currency matches."""
-    if field in CURRENCY_AMOUNT_FIELDS:
-        return record.amount if record.currency == CURRENCY_AMOUNT_FIELDS[field] else None
-    return getattr(record, field)
-
-
-def _to_cell(field: str, value: Any) -> dict:
-    raw = _to_raw(field, value)
-    if raw == "":
-        return {}
-    if isinstance(raw, (int, float)):
-        return {"userEnteredValue": {"numberValue": raw}}
-    return {"userEnteredValue": {"stringValue": raw}}
-
-
-def _parse_date(value: Any) -> date:
-    if isinstance(value, (int, float)):
-        return SHEETS_EPOCH + timedelta(days=int(value))
-    return date.fromisoformat(str(value).strip())
-
-
-def _parse_amount(value: Any) -> float:
-    if isinstance(value, (int, float)):
-        return float(value)
-    return float(str(value).replace(",", "").strip())
-
-
-def _one_of(value: Any, allowed: tuple, default: Any) -> Any:
-    """`value` when it's one of `allowed`, else the reader's default."""
-    return value if value in allowed else default
-
-
-def _parse_row(row: list, columns: dict[str, int]) -> ExpenseData | None:
-    def get(name: str) -> Any:
-        index = columns.get(name)
-        if index is None or index >= len(row) or row[index] == "":
-            return None
-        return row[index]
-
-    raw_date, raw_amount = get("date"), get("amount")
-    if raw_date is None or raw_amount is None:
-        return None
-    try:
-        expense_date = _parse_date(raw_date)
-        amount = _parse_amount(raw_amount)
-    except (TypeError, ValueError):
-        logger.warning("Skipping row with unreadable date/amount: %r", row)
-        return None
-
-    record_type = get("type")
-    source = get("source")
-    record_id = get("id")
-    payment_channel = get("payment_channel")
-    currency = get("currency")
-    return ExpenseData(
-        date=expense_date,
-        amount=amount,
-        description=str(get("description") or ""),
-        category=str(get("category") or "General"),
-        id=str(record_id) if record_id is not None else None,
-        type=_one_of(record_type, TYPE_VALUES, "expense"),
-        payment_channel=str(payment_channel) if payment_channel is not None else None,
-        source=_one_of(source, SOURCE_VALUES, None),
-        # Rows from before currencies existed (or a blank cell) are THB.
-        currency=_one_of(currency, CURRENCIES, DEFAULT_CURRENCY),
-    )
-
-
-def _sheet_ids(metadata: list[dict]) -> list[int]:
-    return sorted(
-        meta["location"]["sheetId"]
-        for meta in metadata
-        if meta["metadataKey"] == META_SHEET_KEY
-        and meta.get("metadataValue") == META_SHEET_VALUE
-        and "sheetId" in meta.get("location", {})
-    )
-
-
-def _columns_on(metadata: list[dict], sheet_id: int) -> dict[str, int]:
-    columns: dict[str, int] = {}
-    for meta in metadata:
-        if meta["metadataKey"] != META_FIELD_KEY:
-            continue
-        dimension_range = meta.get("location", {}).get("dimensionRange")
-        name = meta.get("metadataValue")
-        if (
-            not dimension_range
-            or dimension_range.get("sheetId") != sheet_id
-            or dimension_range.get("dimension") != "COLUMNS"
-            or name not in FIELD_BY_NAME
-        ):
-            continue
-        index = dimension_range["startIndex"]
-        if name in columns and columns[name] != index:
-            logger.warning("Field %s is tagged on more than one column; using the leftmost", name)
-        columns[name] = min(index, columns.get(name, index))
-    return columns
 
 
 class GoogleSheetsStorage(StorageStrategy):
@@ -332,7 +187,7 @@ class GoogleSheetsStorage(StorageStrategy):
             f"#gid={column_map.sheet_id}&range={row}:{row}"
         )
 
-    # --- update / delete (not on the ABC yet) -------------------------------------
+    # --- update / delete ----------------------------------------------------------
 
     async def update(self, record_id: str, changes: dict[str, Any]) -> None:
         invalid = sorted(set(changes) - self.UPDATABLE_FIELDS)
@@ -377,9 +232,9 @@ class GoogleSheetsStorage(StorageStrategy):
         properties = await self._call(self.api.get_sheet_properties(self.spreadsheet_id))
 
         if not sheet_ids:
-            requests = self._new_tab_requests(properties)
+            requests = new_tab_requests(properties)
         else:
-            requests = self._missing_column_requests(sheet_ids[0], _columns_on(metadata, sheet_ids[0]), properties)
+            requests = missing_column_requests(sheet_ids[0], _columns_on(metadata, sheet_ids[0]), properties)
 
         if requests:
             await self._call(self.api.batch_update(self.spreadsheet_id, requests))
@@ -389,60 +244,10 @@ class GoogleSheetsStorage(StorageStrategy):
     async def _backfill_columns(self, column_map: ColumnMap) -> ColumnMap:
         """Add optional columns that older sheets lack (e.g. Currency) before writing."""
         properties = await self._call(self.api.get_sheet_properties(self.spreadsheet_id))
-        requests = self._missing_column_requests(column_map.sheet_id, column_map.columns, properties)
+        requests = missing_column_requests(column_map.sheet_id, column_map.columns, properties)
         await self._write(self.api.batch_update(self.spreadsheet_id, requests))
         self.invalidate_columns()
         return await self.resolve_columns(fresh=True)
-
-    @staticmethod
-    def _new_tab_requests(properties: list[dict]) -> list[dict]:
-        sheet_id = max((p["sheetId"] for p in properties), default=0) + 1
-        titles = {p["title"] for p in properties}
-        title = TAB_TITLE
-        suffix = 1
-        while title in titles:
-            suffix += 1
-            title = f"{TAB_TITLE} {suffix}"
-        return [
-            {"addSheet": {"properties": {"sheetId": sheet_id, "title": title, "gridProperties": {"frozenRowCount": 1}}}},
-            {
-                "updateCells": {
-                    "start": {"sheetId": sheet_id, "rowIndex": 0, "columnIndex": 0},
-                    "rows": [{"values": [header_cell(field) for field in FIELDS]}],
-                    "fields": "userEnteredValue",
-                }
-            },
-            *build_tab_requests(sheet_id),
-        ]
-
-    @staticmethod
-    def _missing_column_requests(sheet_id: int, columns: dict[str, int], properties: list[dict]) -> list[dict]:
-        missing = [
-            field for field in FIELDS
-            if (field.required or field.name in BACKFILL_FIELDS) and field.name not in columns
-        ]
-        if not missing:
-            return []
-        column_count = next(
-            p["gridProperties"]["columnCount"] for p in properties if p["sheetId"] == sheet_id
-        )
-        requests: list[dict] = [{"appendDimension": {"sheetId": sheet_id, "dimension": "COLUMNS", "length": len(missing)}}]
-        for offset, field in enumerate(missing):
-            index = column_count + offset
-            requests.append({
-                "updateCells": {
-                    "start": {"sheetId": sheet_id, "rowIndex": 0, "columnIndex": index},
-                    "rows": [{"values": [header_cell(field)]}],
-                    "fields": "userEnteredValue",
-                }
-            })
-            requests.extend(column_requests(sheet_id, field, index))
-        # Older sheets were set up with other dropdowns (no Cash/Bank, no "manual");
-        # this runs once, together with adding the columns those sheets lack.
-        for name in REVALIDATED_FIELDS:
-            if name in columns:
-                requests.extend(validation_requests(sheet_id, FIELD_BY_NAME[name], columns[name]))
-        return requests
 
     # --- helpers ----------------------------------------------------------------------
 
