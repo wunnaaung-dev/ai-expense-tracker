@@ -74,6 +74,17 @@ def test_year_period_clamps_leap_day():
     assert ranges(period.buckets) == [(date(2028, 1, 1), date(2028, 1, 31)), (date(2028, 2, 1), date(2028, 2, 29))]
 
 
+def test_leap_day_month_and_week_periods():
+    # 2028-02-29 is a Tuesday: the previous month ends Jan 29, the previous week starts Feb 21.
+    month = resolve_period("month", date(2028, 2, 29), "monday")
+    assert month.current == DateRange(date(2028, 2, 1), date(2028, 2, 29))
+    assert month.previous == DateRange(date(2028, 1, 1), date(2028, 1, 29))
+
+    week = resolve_period("week", date(2028, 2, 29), "monday")
+    assert week.current == DateRange(date(2028, 2, 28), date(2028, 2, 29))
+    assert week.previous == DateRange(date(2028, 2, 21), date(2028, 2, 22))
+
+
 def test_custom_previous_is_equal_length_range_before():
     period = resolve_period("custom", TODAY, "monday", date(2026, 10, 11), date(2026, 10, 20))
     assert period.previous == DateRange(date(2026, 10, 1), date(2026, 10, 10))
