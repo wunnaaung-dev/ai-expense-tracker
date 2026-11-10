@@ -162,6 +162,17 @@ def test_currency_filter_and_legacy_records():
     assert body.has_entries
 
 
+def test_available_currencies_lists_all_currencies_before_the_filter():
+    # SAMPLE holds USD and MMK records; the filter only decides what is summed.
+    assert build(SAMPLE).available_currencies == ["MMK", "USD"]
+    only_mmk = build([rec(date(2026, 10, 3), 5000, currency="MMK")], currency="USD")
+    assert only_mmk.available_currencies == ["MMK"] and only_mmk.has_entries
+    assert build([]).available_currencies == []
+    # A record without a currency can't be suggested.
+    no_currency = ExpenseData(date=date(2026, 10, 2), amount=50, description="", currency=None)
+    assert build([no_currency]).available_currencies == []
+
+
 def test_buckets():
     body = build(SAMPLE)
     assert [(b.start.day, b.income, b.expense, b.count) for b in body.buckets] == [
@@ -289,6 +300,7 @@ def test_insights_endpoint(client):
     assert response.status_code == 200
     body = response.json()
     assert body["currency"] == "USD"  # the user's default
+    assert body["available_currencies"] == ["MMK", "USD"]  # every currency in the records
     assert body["period"] == {"kind": "month", "start": "2026-10-01", "end": "2026-10-24", "granularity": "week"}
     assert body["previous"] == {"start": "2026-09-01", "end": "2026-09-24"}
     assert len(body["monthly"]["months"]) == 3

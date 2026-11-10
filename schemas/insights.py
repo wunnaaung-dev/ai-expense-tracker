@@ -124,6 +124,8 @@ class InsightsResponse(BaseModel):
     generated_at: datetime
     # False when the user has no records at all, in any currency.
     has_entries: bool
+    # Every currency present in the records, before the currency filter (sorted).
+    available_currencies: List[Currency]
     period: PeriodInfo
     previous: RangeInfo
     totals: Totals

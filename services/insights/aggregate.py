@@ -258,6 +258,8 @@ def build_insights(
         currency=currency,
         generated_at=generated_at,
         has_entries=bool(records),
+        # Before the currency filter: which currencies this page could switch to.
+        available_currencies=sorted({r.currency for r in records if r.currency}),
         period=PeriodInfo(kind=period.kind, start=period.current.start, end=period.current.end,
                           granularity=period.granularity),
         previous=RangeInfo(start=period.previous.start, end=period.previous.end),
