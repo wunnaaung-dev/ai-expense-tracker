@@ -16,13 +16,12 @@ from schemas.expense import EntryFilter, ExpenseData
 from services.google.errors import GoogleApiError, GooglePermissionError
 from services.google_sheets import google_sheets_storage
 from services.google_sheets.errors import (
-    RecordNotFoundError,
     SheetSchemaBrokenError,
     SpreadsheetMissingError,
 )
 from services.google_sheets.google_sheets_storage import GoogleSheetsStorage
 from services.google_sheets.schema import build_setup_requests, build_spreadsheet_body
-from services.storage.errors import StorageWriteError
+from services.storage.errors import RecordNotFoundError, StorageWriteError
 from tests.fake_google import FakeGoogle
 from tests.test_provisioning import FakeUser, StubProvisioning
 
@@ -128,6 +127,17 @@ async def test_get_all_filters_by_date_category_and_search(storage):
     assert [r.description for r in records] == ["iced coffee", "Coffee beans"]
     records = await storage.get_all(EntryFilter(search="transp"))  # matches the category too
     assert [r.description for r in records] == ["taxi home"]
+
+
+async def test_get_one_reads_back_the_stored_row(storage):
+    (record_id,) = await insert(storage, expense("lunch", 120, day=5, category="Food"))
+
+    record = await storage.get_one(record_id)
+
+    assert record.id == record_id
+    assert (record.description, record.amount, record.date, record.category) == ("lunch", 120, date(2026, 10, 5), "Food")
+    with pytest.raises(RecordNotFoundError):
+        await storage.get_one("no-such-id")
 
 
 async def test_unknown_record_raises(storage):

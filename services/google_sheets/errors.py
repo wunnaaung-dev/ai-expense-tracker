@@ -8,7 +8,3 @@ class SheetSchemaBrokenError(Exception):
 
 class SpreadsheetMissingError(Exception):
     """Raised when the user's spreadsheet was deleted or trashed."""
-
-
-class RecordNotFoundError(Exception):
-    """Raised when no row carries the requested record ID."""

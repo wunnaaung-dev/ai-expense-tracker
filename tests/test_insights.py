@@ -279,6 +279,32 @@ async def test_saving_an_entry_clears_the_cache():
     assert storage.reads == 2
 
 
+async def test_clear_empties_the_cache_for_all_users():
+    storage = CountingStorage([rec(TODAY, 1)])
+    await record_cache.get_records(storage, 1, ("google_sheets", "sheet-1"))
+    await record_cache.get_records(storage, 2, ("notion", "db"))
+    assert storage.reads == 2
+
+    record_cache.clear()
+    await record_cache.get_records(storage, 1, ("google_sheets", "sheet-1"))
+    await record_cache.get_records(storage, 2, ("notion", "db"))
+    assert storage.reads == 4
+
+
+async def test_refresh_replaces_the_cached_entry():
+    storage = CountingStorage([rec(TODAY, 1)])
+    tag = ("google_sheets", "sheet-1")
+    await record_cache.get_records(storage, 1, tag)
+
+    storage.records = [rec(TODAY, 9)]
+    await record_cache.get_records(storage, 1, tag, refresh=True)
+    assert storage.reads == 2
+
+    again, _ = await record_cache.get_records(storage, 1, tag)
+    assert storage.reads == 2  # the refreshed entry replaced the old one
+    assert again == [rec(TODAY, 9)]
+
+
 # --- router -------------------------------------------------------------------------
 
 USER = SimpleNamespace(id=1, default_currency="USD", week_start="monday")

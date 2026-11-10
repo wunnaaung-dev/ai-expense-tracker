@@ -82,6 +82,15 @@ class UnusedStorage(StorageStrategy):
     async def get_all(self, filters):
         return []
 
+    async def get_one(self, record_id):
+        raise AssertionError("storage must not be called")
+
+    async def update(self, record_id, changes):
+        raise AssertionError("storage must not be called")
+
+    async def delete(self, record_id):
+        raise AssertionError("storage must not be called")
+
 
 @pytest.fixture
 def client():

@@ -6,7 +6,7 @@ from datetime import date
 
 from constants.categories import CATEGORIES_BY_TYPE
 
-ExpenseType = Literal["expense", "income"]
+EntryType = Literal["expense", "income"]
 ExpenseSource = Literal["text", "slip", "voice", "manual"]
 ExtractMode = Literal["text", "slip", "voice"]
 Currency = Literal["THB", "MMK", "USD"]
@@ -21,7 +21,7 @@ class ExpenseData(BaseModel):
     category: str = "General"
     # Optional until every backend and extraction prompt supplies them.
     id: Optional[str] = None
-    type: ExpenseType = "expense"
+    type: EntryType = "expense"
     # Free text on rows written before channels were limited to Cash/Bank.
     payment_channel: Optional[str] = None
     source: Optional[ExpenseSource] = None
@@ -36,7 +36,7 @@ class BatchResult(BaseModel):
 
 class EntryFilter(BaseModel):
     """Listing filters; every field left as None matches everything."""
-    entry_type: Optional[ExpenseType] = None
+    entry_type: Optional[EntryType] = None
     currency: Optional[Currency] = None
     category: Optional[str] = None
     date_from: Optional[date] = None
@@ -60,7 +60,7 @@ class EntryPage(BaseModel):
 
 class EntryDraft(BaseModel):
     """What the review screen shows. Never stored server-side; the client sends it back edited."""
-    type: ExpenseType
+    type: EntryType
     amount: float
     currency: Currency
     currency_source: DefaultSource
@@ -81,7 +81,7 @@ class ExtractResponse(BaseModel):
 
 class EntryCreate(BaseModel):
     """The reviewed entry. Saved as is: Gemini is not run again."""
-    type: ExpenseType
+    type: EntryType
     amount: float = Field(gt=0)
     currency: Currency
     date: date
@@ -111,3 +111,24 @@ class EntrySaveResponse(BaseModel):
     entry: ExpenseData
     # Link to the saved row ("Open in Google Sheets"); None when it can't be built.
     storage_url: Optional[str] = None
+
+class EntryUpdate(BaseModel):
+    """PATCH body: only the fields sent are changed (mirrors UserSettingsUpdate).
+
+    `id` and `source` are deliberately absent — the first identifies the record and the
+    second records how it was captured, so neither is user-editable.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    date: date = None
+    amount: float = None
+    description: str = None
+    category: str = None
+    type: EntryType = None
+    payment_channel: PaymentChannel = None
+    currency: Currency = None
+
+    @field_validator("description")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()

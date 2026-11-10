@@ -23,6 +23,7 @@ from services.google_sheets.google_sheets_storage import GoogleSheetsStorage
 from services.google_sheets.provisioning import SheetsProvisioningService
 from services.notion.notion_storage_service import NoSharedNotionPageError, is_invalid_token_error
 from services.notion.provisioning import NotionProvisioningService
+from services.storage import record_cache
 from services.storage.storage_config_service import (
     InvalidNotionTokenError,
     NotionSetupError,
@@ -150,4 +151,7 @@ async def repair_sheets_storage(
 ):
     # Re-adds missing required columns (or the tab); errors map via core/errors.py.
     await storage.repair()
+    # A rebuilt tab or re-added columns change what every reader sees; the cached
+    # records are keyed by (provider, target_id), which repair never changes.
+    record_cache.invalidate(current_user.id)
     return await service.get_status(current_user.id)

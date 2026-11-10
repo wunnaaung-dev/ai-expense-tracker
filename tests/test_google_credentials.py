@@ -11,6 +11,7 @@ from services.google.credentials import (
     get_google_access_token,
     has_sheets_scopes,
     merge_google_credentials,
+    rotate_google_credentials,
 )
 from services.google.errors import GooglePermissionError
 
@@ -36,6 +37,40 @@ def test_merge_takes_new_refresh_token():
         {"access_token": "a", "refresh_token": "r2", "expires_at": 1},
     )
     assert merged["refresh_token"] == "r2"
+
+
+def test_rotate_keeps_old_refresh_token_when_google_omits_it():
+    old = {"access_token": "old", "refresh_token": "r1", "scope": "s"}
+    ciphertext, merged = rotate_google_credentials(
+        encrypt_credentials(old), {"access_token": "new", "expires_in": 3600}
+    )
+    assert merged["refresh_token"] == "r1"
+    assert merged["access_token"] == "new"
+    assert decrypt_credentials(ciphertext) == merged
+
+
+def test_rotate_takes_new_refresh_token():
+    _, merged = rotate_google_credentials(
+        encrypt_credentials({"refresh_token": "r1"}),
+        {"access_token": "a", "refresh_token": "r2", "expires_at": 1},
+    )
+    assert merged["refresh_token"] == "r2"
+
+
+def test_rotate_keeps_old_scope_when_token_omits_it():
+    _, merged = rotate_google_credentials(
+        encrypt_credentials({"access_token": "old", "scope": "openid email drive.file"}),
+        {"access_token": "new", "expires_in": 60},
+    )
+    assert merged["scope"] == "openid email drive.file"
+
+
+def test_rotate_returns_ciphertext_that_decrypts_to_plaintext():
+    old = {"access_token": "old", "refresh_token": "r1", "scope": "s"}
+    ciphertext, merged = rotate_google_credentials(
+        encrypt_credentials(old), {"access_token": "new", "expires_in": 3600}
+    )
+    assert decrypt_credentials(ciphertext) == merged
 
 
 async def _config(db, credentials):

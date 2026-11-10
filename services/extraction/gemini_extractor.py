@@ -8,7 +8,7 @@ from constants.ai_models import GEMINI_FALLBACK_MODEL, GEMINI_MODEL_FOR_OCR
 from constants.categories import CATEGORIES_BY_TYPE
 from constants.currencies import CURRENCIES
 
-from schemas.expense import ExpenseData, ExpenseType
+from schemas.expense import ExpenseData, EntryType
 from core.clock import today
 from core.config import settings
 from services.extraction.abstract_audio_extraction_strategy import AudioExtractionStrategy
@@ -31,7 +31,7 @@ CHANNEL_RULES = """
 """
 
 
-def _fields(entry_type: ExpenseType) -> str:
+def _fields(entry_type: EntryType) -> str:
     """The per-entry extraction rules shared by every prompt."""
     money = "money spent" if entry_type == "expense" else "money received"
     return f"""- date (YYYY-MM-DD; if "today"/"ဒီနေ့" is mentioned or no date is given, use today: {today().isoformat()})
@@ -45,7 +45,7 @@ def _fields(entry_type: ExpenseType) -> str:
 ENTRY_JSON = '{"date": "YYYY-MM-DD", "amount": 0.0, "description": "...", "category": "...", "currency": "THB", "payment_channel": "Cash"}'
 
 
-def image_prompt(entry_type: ExpenseType) -> str:
+def image_prompt(entry_type: EntryType) -> str:
     return f"""
 You are a receipt/slip extraction assistant. The user is logging an {entry_type}.
 
@@ -64,7 +64,7 @@ Respond with ONLY a JSON object, no markdown fences, no other text:
 """
 
 
-def text_prompt(entry_type: ExpenseType) -> str:
+def text_prompt(entry_type: EntryType) -> str:
     return f"""
 You are a money-logging assistant. The user describes one {entry_type} in free text
 (possibly in Burmese, English or Thai). If several are mentioned, use only the main one.
@@ -78,7 +78,7 @@ If the text contains no amount, respond with: {{"amount": null}}
 """
 
 
-def audio_prompt(entry_type: ExpenseType) -> str:
+def audio_prompt(entry_type: EntryType) -> str:
     return f"""
 You are a money-logging assistant. Listen to this audio carefully.
 The speaker may be speaking in Burmese (Myanmar language), English, Thai,
@@ -135,7 +135,7 @@ class GeminiExtractor(ImageExtractionStrategy, TextExtractionStrategy, AudioExtr
         except json.JSONDecodeError as e:
             raise ExtractionUnavailableError(f"AI returned malformed JSON: {e}", retryable=True) from e
 
-    async def extract(self, image_bytes: bytes, mime_type: str, entry_type: ExpenseType) -> Optional[ExpenseData]:
+    async def extract(self, image_bytes: bytes, mime_type: str, entry_type: EntryType) -> Optional[ExpenseData]:
         response = self._generate([
             {"inline_data": {"mime_type": mime_type, "data": image_bytes}},
             image_prompt(entry_type),
@@ -147,7 +147,7 @@ class GeminiExtractor(ImageExtractionStrategy, TextExtractionStrategy, AudioExtr
             return None
         return _entry(raw)
 
-    async def extract_from_text(self, text: str, entry_type: ExpenseType) -> Optional[ExpenseData]:
+    async def extract_from_text(self, text: str, entry_type: EntryType) -> Optional[ExpenseData]:
         response = self._generate([text, text_prompt(entry_type)])
         if response.text is None:
             return None
@@ -155,7 +155,7 @@ class GeminiExtractor(ImageExtractionStrategy, TextExtractionStrategy, AudioExtr
         return _entry(raw) if isinstance(raw, dict) else None
 
     async def extract_from_audio(
-        self, audio_bytes: bytes, mime_type: str, entry_type: ExpenseType
+        self, audio_bytes: bytes, mime_type: str, entry_type: EntryType
     ) -> tuple[Optional[ExpenseData], str]:
         response = self._generate([audio_prompt(entry_type), {"inline_data": {"mime_type": mime_type, "data": audio_bytes}}])
         raw = self._parse_json(response.text or '{"is_valid": false}')

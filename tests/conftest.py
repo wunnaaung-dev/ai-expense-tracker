@@ -5,8 +5,9 @@ from cryptography.fernet import Fernet
 # Tests never read the developer's .env values for these: set them before any app import.
 os.environ["GOOGLE_CLIENT_ID"] = "test-client-id"
 os.environ["GOOGLE_CLIENT_SECRET"] = "test-client-secret"
-os.environ["JWT_SECRET"] = "test-jwt-secret"
-os.environ["SESSION_SECRET"] = "test-session-secret"
+# 32+ characters: Settings requires that length so a weak secret can't ship.
+os.environ["JWT_SECRET"] = "test-jwt-secret-0123456789-0123456789"
+os.environ["SESSION_SECRET"] = "test-session-secret-0123456789-01234"
 os.environ["CREDENTIALS_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 os.environ["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test"
 os.environ["FRONTEND_URL"] = "http://frontend.test"
@@ -30,3 +31,17 @@ async def session_factory():
 async def db(session_factory):
     async with session_factory() as session:
         yield session
+
+
+@pytest.fixture(autouse=True)
+def clear_record_cache():
+    """Every test starts with an empty record cache.
+
+    The list, insights and dashboard endpoints all key it by user id, which several
+    test files reuse, so a leftover entry would leak across tests.
+    """
+    from services.storage import record_cache
+
+    record_cache.clear()
+    yield
+    record_cache.clear()

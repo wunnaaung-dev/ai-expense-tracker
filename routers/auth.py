@@ -16,6 +16,7 @@ from models.users import User
 from schemas.sessions import SessionOut
 from services.auth.auth_service import (
     GOOGLE_LOGIN_NEEDS_REFRESH_TOKEN,
+    AccountExistsOtherProvider,
     AuthService,
     GoogleLoginError,
     NotionLoginError,
@@ -42,6 +43,10 @@ def _settings_redirect(provider: str, outcome: str) -> RedirectResponse:
     return RedirectResponse(url, status_code=status.HTTP_302_FOUND)
 
 
+# A first login whose email belongs to an account of the other provider: no account, no cookie;
+# `provider` names the one to use (google | notion).
+ACCOUNT_EXISTS_OTHER_PROVIDER = "account_exists_other_provider"
+
 # Set while a consent re-prompt is in flight, so a missing refresh token can't loop.
 _GOOGLE_RECONSENT_FLAG = "google_reconsent_attempted"
 # Set by /{provider}/connect: the shared callback links the identity to this user instead of signing in.
@@ -65,13 +70,37 @@ async def _linking_user(request: Request, db: AsyncSession, provider: str) -> tu
     return True, user if user.id == intent.get("user_id") else None
 
 
-@router.get("/google/login")
-async def login(request: Request, reconsent: bool = False):
+async def _start_google_login(request: Request, reconsent: bool):
     # A plain sign-in must never finish as a leftover connect.
     request.session.pop(_LINK_INTENT, None)
     # Google only returns a refresh token on the consent screen.
     params = {"prompt": "consent"} if reconsent else {}
     return await oauth.google.authorize_redirect(request, settings.redirect_uri, **params)
+
+
+async def _start_notion_login(request: Request):
+    request.session.pop(_LINK_INTENT, None)
+    return await oauth.notion.authorize_redirect(request, settings.notion_redirect_uri)
+
+
+# The login start the frontend links to. Callbacks stay under /api/auth (the registered redirect URIs).
+v1_router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+
+@v1_router.get("/google/start")
+async def google_start(request: Request, reconsent: bool = False):
+    return await _start_google_login(request, reconsent)
+
+
+@v1_router.get("/notion/start")
+async def notion_start(request: Request):
+    return await _start_notion_login(request)
+
+
+# Older alias of /api/v1/auth/google/start; the consent re-prompt below still goes through it.
+@router.get("/google/login")
+async def login(request: Request, reconsent: bool = False):
+    return await _start_google_login(request, reconsent)
 
 
 @router.get("/google/connect")
@@ -95,6 +124,8 @@ async def callback(
     try:
         token = await oauth.google.authorize_access_token(request)
         result = await auth_service.login_with_google(token, client_info(request))
+    except AccountExistsOtherProvider as exc:
+        return _frontend_redirect(status=ACCOUNT_EXISTS_OTHER_PROVIDER, provider=exc.provider)
     except (OAuthError, GoogleLoginError):
         return _frontend_redirect(status="error")
 
@@ -134,10 +165,10 @@ async def _google_connect_callback(
     return _settings_redirect("google", outcome)
 
 
+# Older alias of /api/v1/auth/notion/start
 @router.get("/notion/login")
 async def notion_login(request: Request):
-    request.session.pop(_LINK_INTENT, None)
-    return await oauth.notion.authorize_redirect(request, settings.notion_redirect_uri)
+    return await _start_notion_login(request)
 
 
 @router.get("/notion/connect")
@@ -167,6 +198,8 @@ async def notion_callback(
     try:
         token = await oauth.notion.authorize_access_token(request)
         _, jwt_token = await auth_service.login_with_notion(token, client_info(request))
+    except AccountExistsOtherProvider as exc:
+        return _frontend_redirect(status=ACCOUNT_EXISTS_OTHER_PROVIDER, provider=exc.provider)
     except OAuthError as exc:
         return _frontend_redirect(error=exc.error or "oauth_error")
     except NotionLoginError:

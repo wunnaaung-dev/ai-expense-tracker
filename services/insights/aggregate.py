@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 
 from constants.payment_channels import PAYMENT_CHANNELS
 from schemas.dashboard import DashboardPeriodInfo, DashboardResponse, FlowDay, SpendingFlow
-from schemas.expense import Currency, EntryFilter, ExpenseData, ExpenseType
+from schemas.expense import Currency, EntryFilter, ExpenseData, EntryType
 from schemas.insights import (
     BiggestBucketHighlight,
     Bucket,
@@ -96,7 +96,7 @@ class _Builder:
         return result
 
     def categories(self, current: List[ExpenseData], previous: List[ExpenseData],
-                   entry_type: ExpenseType) -> List[CategoryShare]:
+                   entry_type: EntryType) -> List[CategoryShare]:
         amounts = _by_category(current, entry_type)
         counts: Dict[str, int] = defaultdict(int)
         for record in current:
@@ -187,7 +187,7 @@ class _Builder:
         return MonthlyReport(months=rows, total=total)
 
 
-def _by_category(records: List[ExpenseData], entry_type: ExpenseType) -> Dict[str, float]:
+def _by_category(records: List[ExpenseData], entry_type: EntryType) -> Dict[str, float]:
     amounts: Dict[str, float] = defaultdict(float)
     for record in records:
         if record.type == entry_type:

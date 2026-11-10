@@ -31,7 +31,6 @@ from services.google_sheets.codec import (
     parse_row as _parse_row,
 )
 from services.google_sheets.errors import (
-    RecordNotFoundError,
     SheetSchemaBrokenError,
     SpreadsheetMissingError,
 )
@@ -51,7 +50,7 @@ from services.google_sheets.schema import (
     REQUIRED_FIELDS,
 )
 from services.storage.abstract_storage_strategy import StorageStrategy
-from services.storage.errors import StorageWriteError
+from services.storage.errors import RecordNotFoundError, StorageWriteError
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +174,18 @@ class GoogleSheetsStorage(StorageStrategy):
         ]
         records.sort(key=lambda record: record.date, reverse=True)
         return records
+
+    async def get_one(self, record_id: str) -> ExpenseData:
+        column_map = await self.resolve_columns()
+        row_index = await self._locate(record_id, column_map)
+        values = await self._call(self.api.get_grid_values(
+            self.spreadsheet_id,
+            grid_range(column_map.sheet_id, rows=(row_index, row_index + 1)),
+        ))
+        record = _parse_row(values[0], column_map.columns) if values else None
+        if record is None:
+            raise RecordNotFoundError(record_id)  # id cell unreadable or the row was edited away
+        return record
 
     async def record_url(self, record: ExpenseData) -> Optional[str]:
         """Link that opens the spreadsheet with the record's row selected."""

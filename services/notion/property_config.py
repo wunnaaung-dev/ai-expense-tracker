@@ -18,14 +18,23 @@ EXPENSE_DB_SCHEMA: Dict[str, Dict[str, Any]] = {
 # Properties that databases created before they existed get on their next write.
 BACKFILL_PROPERTIES = (CURRENCY_PROPERTY, TYPE_PROPERTY)
 
+# (Notion property, the ExpenseData field it holds, how to encode that field's value).
+# A single list so the create map and the partial-update map can never drift apart.
+_EXPENSE_PROPERTIES: tuple[tuple[str, str, Callable[[ExpenseData], Any]], ...] = (
+    ("Name", "description", lambda item: {"title": [{"text": {"content": item.description}}]}),
+    ("Amount", "amount", lambda item: {"number": item.amount}),
+    ("Date", "date", lambda item: {"date": {"start": item.date.isoformat()}}),
+    ("Category", "category", lambda item: {"select": {"name": item.category}}),
+    (CURRENCY_PROPERTY, "currency", lambda item: {"select": {"name": item.currency or DEFAULT_CURRENCY}}),
+    (TYPE_PROPERTY, "type", lambda item: {"select": {"name": item.type}}),
+)
+
 EXPENSE_PROPERTY_MAP: Dict[str, Callable[[ExpenseData], Any]] = {
-    "Name": lambda item: {"title": [{"text": {"content": item.description}}]},
-    "Amount": lambda item: {"number": item.amount},
-    "Date": lambda item: {"date": {"start": item.date.isoformat()}},
-    "Category": lambda item: {"select": {"name": item.category}},
-    CURRENCY_PROPERTY: lambda item: {"select": {"name": item.currency or DEFAULT_CURRENCY}},
-    TYPE_PROPERTY: lambda item: {"select": {"name": item.type}},
+    name: encode for name, _field, encode in _EXPENSE_PROPERTIES
 }
+
+# ExpenseData field -> the Notion property that holds it, so a PATCH writes only what changed.
+PROPERTY_BY_FIELD: Dict[str, str] = {field: name for name, field, _encode in _EXPENSE_PROPERTIES}
 
 def build_properties(item: ExpenseData) -> Dict[str, Any]:
     return {
@@ -57,6 +66,8 @@ def parse_notion_page(page: Dict[str, Any]) -> ExpenseData:
         amount=amount,
         description=description,
         category=category,
+        # The page id is the record's id: it is how a single entry is addressed for update/delete.
+        id=str(page["id"]) if page.get("id") else None,
         type=record_type if record_type in TYPE_VALUES else "expense",
         currency=currency if currency in CURRENCIES else DEFAULT_CURRENCY,
     )

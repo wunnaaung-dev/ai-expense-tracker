@@ -2,7 +2,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +12,12 @@ from core.crypto import decrypt_credentials, encrypt_credentials
 from models.sessions import UserSession
 from models.storage import ExpensesDedup, UserStorageConfig
 from models.users import User
-from services.google.credentials import has_sheets_scopes, merge_google_credentials, revoke_google_token
+from services.google.credentials import (
+    has_sheets_scopes,
+    merge_google_credentials,
+    revoke_google_token,
+    rotate_google_credentials,
+)
 from services.auth.client_info import ClientInfo
 from services.auth.session_service import start_session
 from services.google_sheets.provisioning import SheetsProvisioningService
@@ -27,6 +32,15 @@ class NotionLoginError(Exception):
 
 class GoogleLoginError(Exception):
     """Raised when the Google token response has no user info."""
+
+
+class AccountExistsOtherProvider(Exception):
+    """A first login whose email already has an account under the other provider; nothing was created."""
+
+    def __init__(self, provider: str):
+        super().__init__(f"Account exists with {provider}")
+        # "google" | "notion": the provider to sign in with instead (as in /api/v1/auth/{provider}/start)
+        self.provider = provider
 
 
 GOOGLE_LOGIN_OK = "ok"
@@ -80,6 +94,11 @@ class AuthService:
         now = datetime.now(timezone.utc)
         user = await self._find_google_user(google_sub)
         if user is None:
+            # Only a verified Google email may point at another account
+            if user_info.get("email_verified") and await self._find_other_provider_owner(
+                user_info.get("email"), "google"
+            ):
+                raise AccountExistsOtherProvider("notion")
             user = User(
                 google_sub=google_sub,
                 email=user_info.get("email"),
@@ -102,8 +121,26 @@ class AuthService:
         if user_info.get("email"):
             user.email = user_info["email"]
         await self.db.commit()
-        await self.db.refresh(user)
         return user
+
+    async def _find_other_provider_owner(self, email: str | None, logging_in_with: str) -> User | None:
+        """A user with this email (any case) who signed up with the other provider and lacks this one.
+
+        `logging_in_with` is "google" or "notion". Accounts are never merged: a first login with the
+        other provider is sent back to the original.
+        """
+        if not email or not email.strip():
+            return None
+        this_identity, other_identity = (
+            (User.google_sub, User.notion_user_id) if logging_in_with == "google" else (User.notion_user_id, User.google_sub)
+        )
+        result = await self.db.execute(
+            select(User)
+            .where(func.lower(User.email) == email.strip().lower())
+            .where(this_identity.is_(None), other_identity.is_not(None))
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def _find_google_user(self, google_sub: str | None) -> User | None:
         result = await self.db.execute(
@@ -145,25 +182,28 @@ class AuthService:
 
     async def _upsert_google_credentials(self, user_id: int, token: dict) -> dict:
         config = await get_storage_config(self.db, user_id, GOOGLE_SHEETS_PROVIDER)
-        if config is None:
-            credentials = merge_google_credentials(None, token)
-            try:
-                async with self.db.begin_nested():
-                    self.db.add(UserStorageConfig(
-                        user_id=user_id,
-                        provider=GOOGLE_SHEETS_PROVIDER,
-                        encrypted_credentials=encrypt_credentials(credentials),
-                    ))
-                await self.db.commit()
-                return credentials
-            except IntegrityError:
-                # A concurrent login inserted the row first; merge into it below.
-                config = await get_storage_config(self.db, user_id, GOOGLE_SHEETS_PROVIDER)
+        if config is not None:
+            return await self._update_google_credentials(config, token)
 
+        credentials = merge_google_credentials(None, token)
+        try:
+            async with self.db.begin_nested():
+                self.db.add(UserStorageConfig(
+                    user_id=user_id,
+                    provider=GOOGLE_SHEETS_PROVIDER,
+                    encrypted_credentials=encrypt_credentials(credentials),
+                ))
+            await self.db.commit()
+            return credentials
+        except IntegrityError:
+            # A concurrent login inserted the row first; merge into that row instead.
+            config = await get_storage_config(self.db, user_id, GOOGLE_SHEETS_PROVIDER)
+            return await self._update_google_credentials(config, token)
+
+    async def _update_google_credentials(self, config: UserStorageConfig, token: dict) -> dict:
         # Keep target_id: the user's spreadsheet stays the same.
-        old = decrypt_credentials(config.encrypted_credentials)
-        credentials = merge_google_credentials(old, token)
-        config.encrypted_credentials = encrypt_credentials(credentials)
+        ciphertext, credentials = rotate_google_credentials(config.encrypted_credentials, token)
+        config.encrypted_credentials = ciphertext
         await self.db.commit()
         return credentials
 
@@ -249,6 +289,9 @@ class AuthService:
             if email:
                 user.email = email
             return user
+
+        if await self._find_other_provider_owner(email, "notion"):
+            raise AccountExistsOtherProvider("google")
 
         user = User(
             notion_user_id=notion_user_id,

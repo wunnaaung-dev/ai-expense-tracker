@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from core.dependencies import get_storage_service
+from core.dependencies import get_storage_service, get_storage_tag
 from core.security import get_current_user
 from main import app
 from schemas.expense import EntryFilter, ExpenseData
@@ -180,6 +180,7 @@ async def test_notion_combines_currency_and_type_filters():
 def test_list_rejects_unknown_currency_filter():
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, default_currency="THB")
     app.dependency_overrides[get_storage_service] = RecordingStorage
+    app.dependency_overrides[get_storage_tag] = lambda: ("google_sheets", "sheet-1")
     try:
         response = TestClient(app).get("/api/v1/expense", params={"currency": "EUR"})
         assert response.status_code == 422
@@ -192,7 +193,10 @@ class TypeRecordingStorage(RecordingStorage):
 
     async def get_all(self, filters):
         self.calls.append((filters.currency, filters.entry_type))
-        return [expense(currency="THB")]
+        return [
+            ExpenseData(date=date(2026, 10, 1), amount=100, description="lunch", currency="THB", type="expense"),
+            ExpenseData(date=date(2026, 10, 1), amount=200, description="salary", currency="THB", type="income"),
+        ]
 
 
 @pytest.mark.parametrize("path, entry_type", [
@@ -203,11 +207,14 @@ def test_list_routes_filter_by_type(path, entry_type):
     TypeRecordingStorage.calls = []
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, default_currency="THB")
     app.dependency_overrides[get_storage_service] = TypeRecordingStorage
+    app.dependency_overrides[get_storage_tag] = lambda: ("google_sheets", "sheet-1")
     try:
         response = TestClient(app).get(path, params={"currency": "THB"})
         assert response.status_code == 200
-        assert len(response.json()["content"]) == 1
-        assert TypeRecordingStorage.calls == [("THB", entry_type)]
+        content = response.json()["content"]
+        assert len(content) == 1 and content[0]["type"] == entry_type
+        # One unfiltered read is shared by both routes; the type filter is applied to it.
+        assert TypeRecordingStorage.calls == [(None, None)]
         assert TestClient(app).get(path, params={"currency": "EUR"}).status_code == 422
     finally:
         app.dependency_overrides.clear()

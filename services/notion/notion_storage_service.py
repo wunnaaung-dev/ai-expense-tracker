@@ -1,25 +1,30 @@
 import asyncio
+import logging
 
 from notion_client import APIResponseError, AsyncClient
 from notion_client.errors import APIErrorCode
 from typing import List, Callable, Dict, Any, Optional
 
 from services.storage.abstract_storage_strategy import StorageStrategy
-from services.storage.errors import StorageWriteError
+from services.storage.errors import RecordNotFoundError, StorageWriteError
 from services.storage.filters import matches
 from constants.currencies import DEFAULT_CURRENCY
-from schemas.expense import BatchResult, Currency, EntryFilter, ExpenseData, ExpenseType
+from schemas.expense import BatchResult, Currency, EntryFilter, ExpenseData, EntryType
 from services.notion.property_config import (
     BACKFILL_PROPERTIES,
     CURRENCY_PROPERTY,
-    TYPE_PROPERTY,
     EXPENSE_DB_SCHEMA,
+    EXPENSE_PROPERTY_MAP,
+    PROPERTY_BY_FIELD,
+    TYPE_PROPERTY,
     build_properties,
     parse_notion_page,
 )
 
 
 NOTION_MAX_PAGE_SIZE = 100
+
+logger = logging.getLogger(__name__)
 
 
 class NoSharedNotionPageError(Exception):
@@ -28,6 +33,10 @@ class NoSharedNotionPageError(Exception):
 
 def is_invalid_token_error(exc: APIResponseError) -> bool:
     return exc.code in {APIErrorCode.Unauthorized, APIErrorCode.RestrictedResource}
+
+
+def is_not_found_error(exc: APIResponseError) -> bool:
+    return exc.code == APIErrorCode.ObjectNotFound
 
 
 def _format_database_id(database_id: str) -> str:
@@ -122,7 +131,7 @@ class NotionStorageService(StorageStrategy):
         return {"or": [equals, {"property": CURRENCY_PROPERTY, "select": {"is_empty": True}}]}
 
     @staticmethod
-    def _type_filter(entry_type: ExpenseType) -> Dict[str, Any]:
+    def _type_filter(entry_type: EntryType) -> Dict[str, Any]:
         equals = {"property": TYPE_PROPERTY, "select": {"equals": entry_type}}
         if entry_type != "expense":
             return equals
@@ -153,8 +162,9 @@ class NotionStorageService(StorageStrategy):
         return results
 
     async def record_url(self, record: ExpenseData) -> Optional[str]:
-        # Pages are created without returning their URL; the database is the useful link.
-        return f"https://www.notion.so/{self.database_id.replace('-', '')}"
+        # The page is the record; without an id (a row read before ids existed) fall back to the database.
+        target = record.id.replace("-", "") if record.id else self.database_id.replace("-", "")
+        return f"https://www.notion.so/{target}"
 
     async def get_all(self, filters: EntryFilter) -> List[ExpenseData]:
         async with self.semaphore:
@@ -207,3 +217,49 @@ class NotionStorageService(StorageStrategy):
             records = [record for record in records if matches(record, filters)]
             records.sort(key=lambda record: record.date, reverse=True)
             return records
+
+    async def get_one(self, record_id: str) -> ExpenseData:
+        async with self.semaphore:
+            try:
+                page = await self.client.pages.retrieve(page_id=record_id)
+            except APIResponseError as exc:
+                if is_not_found_error(exc):
+                    raise RecordNotFoundError(record_id) from exc
+                raise
+        return parse_notion_page(page)
+
+    async def update(self, record_id: str, changes: Dict[str, Any]) -> None:
+        if not changes:
+            return
+        await self._ensure_properties()
+        # Each encoder reads the field it writes, so it needs the merged record,
+        # not the patch. Only the properties that actually changed are sent.
+        merged = (await self.get_one(record_id)).model_copy(update=changes)
+        properties = {
+            PROPERTY_BY_FIELD[field]: EXPENSE_PROPERTY_MAP[PROPERTY_BY_FIELD[field]](merged)
+            for field in changes
+            if field in PROPERTY_BY_FIELD
+        }
+        if not properties:
+            # The same fields `build_properties` drops on insert (e.g. Payment
+            # Channel): this database has nowhere to keep them, so nothing to write.
+            logger.warning("Notion database %s has no property for %s", self.database_id, sorted(changes))
+            return
+        async with self.semaphore:
+            try:
+                await self.client.pages.update(page_id=record_id, properties=properties)
+            except APIResponseError as exc:
+                if is_not_found_error(exc):
+                    raise RecordNotFoundError(record_id) from exc
+                raise StorageWriteError(str(exc)) from exc
+
+    async def delete(self, record_id: str) -> None:
+        # Notion has no hard delete: a trashed page drops out of every query,
+        # so get_all stops returning it.
+        async with self.semaphore:
+            try:
+                await self.client.pages.update(page_id=record_id, in_trash=True)
+            except APIResponseError as exc:
+                if is_not_found_error(exc):
+                    raise RecordNotFoundError(record_id) from exc
+                raise StorageWriteError(str(exc)) from exc

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 
 from core.dependencies import get_entry_service, get_storage_service
 from core.security import get_current_user
-from schemas.expense import EntryCreate, EntrySaveResponse, ExpenseType, ExtractMode, ExtractResponse
+from schemas.expense import EntryCreate, EntrySaveResponse, EntryUpdate, EntryType, ExtractMode, ExtractResponse
 from services.entries.entry_service import EntryService
 from services.storage.abstract_storage_strategy import StorageStrategy
 
@@ -15,7 +15,7 @@ ALLOWED_AUDIO_TYPES = {"audio/webm", "audio/ogg", "audio/wav", "audio/mp4", "aud
 
 @router.post("/entries/extract", response_model=ExtractResponse)
 async def extract_entry(
-    type: ExpenseType = Form(...),
+    type: EntryType = Form(...),
     mode: ExtractMode = Form(...),
     text: Optional[str] = Form(default=None),
     file: Optional[UploadFile] = File(default=None),
@@ -31,6 +31,7 @@ async def extract_entry(
     if file is None:
         raise HTTPException(status_code=400, detail=f"file is required for mode={mode}")
     content_type = file.content_type or ""
+    
     if mode == "slip":
         if not content_type.startswith("image/"):
             raise HTTPException(status_code=400, detail=f"Unsupported image type: {content_type}")
@@ -38,6 +39,7 @@ async def extract_entry(
 
     if content_type not in ALLOWED_AUDIO_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported audio type: {content_type}")
+    
     return await service.extract_voice(type, await file.read(), content_type, duration_seconds)
 
 
@@ -49,3 +51,24 @@ async def save_entry(
 ):
     """Write the reviewed entry to the user's Google Sheet or Notion database."""
     return await service.save(entry, storage)
+
+
+@router.patch("/entries/{record_id}", response_model=EntrySaveResponse)
+async def update_entry(
+    record_id: str,
+    patch: EntryUpdate,
+    service: EntryService = Depends(get_entry_service),
+    storage: StorageStrategy = Depends(get_storage_service),
+):
+    """Change only the fields sent; returns the entry as it now stands."""
+    return await service.update(record_id, patch, storage)
+
+
+@router.delete("/entries/{record_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_entry(
+    record_id: str,
+    service: EntryService = Depends(get_entry_service),
+    storage: StorageStrategy = Depends(get_storage_service),
+):
+    """Remove the entry from the user's Google Sheet or Notion database."""
+    await service.delete(record_id, storage)

@@ -10,15 +10,21 @@ from routers import settings as settings_router
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+_cors_kwargs: dict = {
+    "allow_origins": settings.cors_origins,
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+    "allow_origin_regex": settings.allowed_origin_regex or None,
+}
 
-app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.session_secret,
+    https_only=settings.secure_cookies,
+)
 
 app.include_router(health.router)
 app.include_router(expense.router)
@@ -29,6 +35,7 @@ app.include_router(dashboard.router)
 app.include_router(storage.router)
 app.include_router(settings_router.router)
 app.include_router(auth.router)
+app.include_router(auth.v1_router)
 
 register_exception_handlers(app)
 

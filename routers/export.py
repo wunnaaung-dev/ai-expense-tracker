@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from core.clock import today
 from core.dependencies import get_storage_service
 from core.security import get_current_user
-from schemas.expense import Currency, EntryFilter, ExpenseType
+from schemas.expense import Currency, EntryFilter, EntryType
 from services.export.exporter import to_csv, to_xlsx
 from services.storage.abstract_storage_strategy import StorageStrategy
 
@@ -24,7 +24,7 @@ def _export_filters(
     date_from: Optional[date] = Query(default=None, description="Inclusive"),
     date_to: Optional[date] = Query(default=None, description="Inclusive"),
     currency: Optional[Currency] = Query(default=None),
-    type: Optional[ExpenseType] = Query(default=None, description="Omit for expenses and income"),
+    type: Optional[EntryType] = Query(default=None, description="Omit for expenses and income"),
 ) -> EntryFilter:
     if date_from and date_to and date_from > date_to:
         raise HTTPException(status_code=422, detail="date_from must be on or before date_to")

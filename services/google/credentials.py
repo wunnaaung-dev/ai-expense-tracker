@@ -39,6 +39,13 @@ def merge_google_credentials(old: dict | None, token: dict) -> dict:
     return credentials
 
 
+def rotate_google_credentials(encrypted_old: str, token: dict) -> tuple[str, dict]:
+    """Merge a fresh token into stored credentials, keeping the old refresh token.
+    Returns (new ciphertext, merged plaintext)."""
+    credentials = merge_google_credentials(decrypt_credentials(encrypted_old), token)
+    return encrypt_credentials(credentials), credentials
+
+
 async def get_google_access_token(
     db: AsyncSession,
     config: UserStorageConfig,

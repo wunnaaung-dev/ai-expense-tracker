@@ -22,6 +22,15 @@ class FailingStorage(StorageStrategy):
     async def get_all(self, filters: EntryFilter) -> List[ExpenseData]:
         return []
 
+    async def get_one(self, record_id: str) -> ExpenseData:
+        raise StorageWriteError("backend down")
+
+    async def update(self, record_id: str, changes) -> None:
+        raise StorageWriteError("backend down")
+
+    async def delete(self, record_id: str) -> None:
+        raise StorageWriteError("backend down")
+
 
 @pytest.fixture
 def client():

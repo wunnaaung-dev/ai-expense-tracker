@@ -3,7 +3,7 @@ from typing import Annotated, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
-from schemas.expense import Currency, ExpenseType
+from schemas.expense import Currency, EntryType
 
 PeriodKind = Literal["week", "month", "year", "custom"]
 Granularity = Literal["day", "week", "month"]
@@ -73,7 +73,7 @@ class ChannelShare(BaseModel):
 
 class CategoryChangeHighlight(BaseModel):
     kind: Literal["category_change"] = "category_change"
-    type: ExpenseType
+    type: EntryType
     category: str
     current: float
     previous: float

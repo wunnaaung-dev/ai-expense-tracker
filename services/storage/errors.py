@@ -8,3 +8,7 @@ class StorageNotReadyError(Exception):
     def __init__(self, status: str):
         super().__init__(f"Storage is not ready: {status}")
         self.status = status
+
+
+class RecordNotFoundError(Exception):
+    """Raised when no record carries the requested record ID."""

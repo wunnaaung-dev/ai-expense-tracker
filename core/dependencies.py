@@ -28,6 +28,7 @@ from services.notion.provisioning import NotionProvisioningService
 from services.settings.settings_service import SettingsService
 from services.storage import record_cache
 from services.storage.abstract_storage_strategy import StorageStrategy
+from services.storage.record_cache import StorageTag
 from services.storage.errors import StorageNotReadyError
 from services.storage.storage_config_service import StorageConfigService
 from services.storage.user_storage import get_storage_config, set_storage_status
@@ -112,15 +113,26 @@ async def get_storage_service(
     raise StorageNotReadyError(STATUS_NONE)
 
 
-async def get_insights_service(
+async def get_storage_tag(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
-    storage: StorageStrategy = Depends(get_storage_service),
-) -> InsightsService:
-    # get_storage_service has checked the config is ready; its target tags the cached records.
+) -> StorageTag:
+    """(provider, target_id) the current default storage reads from; tags the cached records.
+
+    `get_storage_service` is resolved before this and raises StorageNotReadyError when
+    the row isn't ready, so a request never reaches its handler with a stale tag.
+    """
     provider = current_user.default_storage_provider
     config = await get_storage_config(db, current_user.id, provider)
-    return InsightsService(storage, current_user, (provider, config.target_id))
+    return (provider, config.target_id if config else "")
+
+
+async def get_insights_service(
+    current_user: User = Depends(get_current_user),
+    storage: StorageStrategy = Depends(get_storage_service),
+    tag: StorageTag = Depends(get_storage_tag),
+) -> InsightsService:
+    return InsightsService(storage, current_user, tag)
 
 
 def get_duplicate_checker(

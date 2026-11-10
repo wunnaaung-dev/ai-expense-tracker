@@ -8,7 +8,7 @@ COOKIE_SAMESITE = "lax"
 def _cookie_kwargs() -> dict:
     return {
         "httponly": True,
-        "secure": settings.cookie_secure,
+        "secure": settings.secure_cookies,
         "samesite": COOKIE_SAMESITE,
     }
 
