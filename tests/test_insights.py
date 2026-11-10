@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -316,3 +316,24 @@ def test_insights_endpoint(client):
 def test_insights_rejects_bad_params(client, params):
     http, _ = client
     assert http.get("/api/v1/insights", params=params).status_code == 422
+
+
+def test_custom_range_over_the_limit_is_rejected(client):
+    http, _ = client
+    response = http.get("/api/v1/insights", params={"period": "custom",
+                                                     "date_from": "2020-01-01", "date_to": "2025-12-31"})
+    assert response.status_code == 422
+    assert response.json() == {"code": "range_too_long", "max_days": 366}
+
+
+def test_custom_range_limit_counts_both_ends(client):
+    http, _ = client
+    date_from = date(2028, 1, 1)
+    # Both ends count: a full leap year (Jan 1 – Dec 31, 2028) is 366 days → allowed.
+    leap_year = http.get("/api/v1/insights", params={"period": "custom", "date_from": date_from.isoformat(),
+                                                      "date_to": (date_from + timedelta(days=365)).isoformat()})
+    assert leap_year.status_code == 200
+    # One day further (into 2029) is 367 → rejected.
+    over = http.get("/api/v1/insights", params={"period": "custom", "date_from": date_from.isoformat(),
+                                                 "date_to": (date_from + timedelta(days=366)).isoformat()})
+    assert over.status_code == 422 and over.json() == {"code": "range_too_long", "max_days": 366}
